@@ -1,9 +1,30 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 
 export function TacticalMap({ soldiers, selectedSoldier, onSelectSoldier }) {
   const [hoveredSoldier, setHoveredSoldier] = useState(null);
+  const mapRef = useRef(null);
+
+  // Draggable unit positions (percentage-based)
+  const [soldierPos, setSoldierPos] = useState({ x: 30, y: 40 });
+  const [enemyPos, setEnemyPos] = useState({ x: 70, y: 60 });
+
+  // Tracking drag state
+  const [dragging, setDragging] = useState(null);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+
+  // Telemetry data
+  const [inCover, setInCover] = useState(0);
+  const [heartRate, setHeartRate] = useState(75);
+  const [soldierStatus, setSoldierStatus] = useState("nominal");
+
+  // Safe zones (cover areas) - define as percentage-based coordinates
+  const safeZones = [
+    { id: "Structure A", x: 15, y: 20, w: 15, h: 10 },
+    { id: "Compound B", x: 60, y: 55, w: 20, h: 15 },
+    { id: "HZ", x: 40, y: 25, w: 8, h: 8, isCircle: true },
+  ];
 
   const getStatusColor = useCallback((status) => {
     switch (status) {
@@ -31,218 +52,324 @@ export function TacticalMap({ soldiers, selectedSoldier, onSelectSoldier }) {
     }
   }, []);
 
+  // Collision detection: Check if soldier is in cover
+  const checkCover = useCallback((pos) => {
+    for (const zone of safeZones) {
+      if (zone.isCircle) {
+        // Circle collision
+        const dx = pos.x - zone.x;
+        const dy = pos.y - zone.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance <= zone.w / 2) {
+          return 1;
+        }
+      } else {
+        // Rectangle collision
+        if (
+          pos.x >= zone.x &&
+          pos.x <= zone.x + zone.w &&
+          pos.y >= zone.y &&
+          pos.y <= zone.y + zone.h
+        ) {
+          return 1;
+        }
+      }
+    }
+    return 0;
+  }, []);
+
+  // Calculate distance between soldier and enemy
+  const calculateDistance = useCallback((pos1, pos2) => {
+    const dx = pos2.x - pos1.x;
+    const dy = pos2.y - pos1.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }, []);
+
+  // Map distance to heart rate (75 BPM baseline at distance > 50%, max 160 BPM at distance < 5%)
+  const calculateHeartRate = useCallback((distance) => {
+    const maxDistance = 50; // Baseline at > 50% map distance
+    const minDistance = 5; // Max heart rate at < 5% map distance
+    
+    if (distance >= maxDistance) {
+      return 75;
+    } else if (distance <= minDistance) {
+      return 160;
+    } else {
+      // Linear interpolation between 75 and 160
+      const ratio = (maxDistance - distance) / (maxDistance - minDistance);
+      return Math.round(75 + (160 - 75) * ratio);
+    }
+  }, []);
+
+  // Get soldier status based on heart rate
+  const getHeartRateStatus = useCallback((hr) => {
+    if (hr < 90) return "nominal";
+    if (hr < 130) return "warning";
+    return "critical";
+  }, []);
+
+  // Drag handlers
+  const handleMouseDown = (e, unitType) => {
+    if (!mapRef.current) return;
+    
+    const rect = mapRef.current.getBoundingClientRect();
+    const clickX = ((e.clientX - rect.left) / rect.width) * 100;
+    const clickY = ((e.clientY - rect.top) / rect.height) * 100;
+    
+    const currentPos = unitType === "soldier" ? soldierPos : enemyPos;
+    
+    setDragging(unitType);
+    setDragOffset({
+      x: clickX - currentPos.x,
+      y: clickY - currentPos.y,
+    });
+  };
+
+  const handleMouseMove = (e) => {
+    if (!dragging || !mapRef.current) return;
+
+    const rect = mapRef.current.getBoundingClientRect();
+    const moveX = ((e.clientX - rect.left) / rect.width) * 100;
+    const moveY = ((e.clientY - rect.top) / rect.height) * 100;
+
+    const newX = Math.max(0, Math.min(100, moveX - dragOffset.x));
+    const newY = Math.max(0, Math.min(100, moveY - dragOffset.y));
+
+    if (dragging === "soldier") {
+      setSoldierPos({ x: newX, y: newY });
+    } else if (dragging === "enemy") {
+      setEnemyPos({ x: newX, y: newY });
+    }
+  };
+
+  const handleMouseUp = () => {
+    setDragging(null);
+  };
+
+  // Update telemetry data whenever positions change
+  useEffect(() => {
+    const newCover = checkCover(soldierPos);
+    setInCover(newCover);
+
+    const distance = calculateDistance(soldierPos, enemyPos);
+    const newHeartRate = calculateHeartRate(distance);
+    setHeartRate(newHeartRate);
+
+    const newStatus = getHeartRateStatus(newHeartRate);
+    setSoldierStatus(newStatus);
+  }, [soldierPos, enemyPos, checkCover, calculateDistance, calculateHeartRate, getHeartRateStatus]);
+
+  // Output telemetry payload
+  useEffect(() => {
+    const payload = {
+      unit_id: "ALPHA-1",
+      coordinates: {
+        x: Math.round(soldierPos.x),
+        y: Math.round(soldierPos.y),
+      },
+      heart_rate: heartRate,
+      in_cover: inCover,
+    };
+    
+    console.log("TELEMETRY_PAYLOAD:", payload);
+  }, [soldierPos, heartRate, inCover]);
+
   return (
-    <div className="relative w-full h-full bg-card rounded border border-border overflow-hidden">
+    <div
+      ref={mapRef}
+      className="relative w-full h-full bg-card rounded border border-border overflow-hidden cursor-grab active:cursor-grabbing"
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+    >
+      {/* Satellite/Top-Down Map Background */}
+      <img
+        src="/satellite.jpg"
+        alt="Satellite Tactical Map"
+        className="absolute inset-0 w-full h-full object-contain bg-black"
+        style={{
+          filter: "contrast(1.3) brightness(1.2) saturate(1.1)"
+        }}
+      />
+
+      {/* Tactical Grid Overlay - Much Lighter */}
+      <div className="absolute inset-0 tactical-grid opacity-10" />
+
       {/* Map Header */}
-      <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2 bg-background/80 backdrop-blur-sm border-b border-border">
+      <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2 bg-background/70 backdrop-blur-sm border-b border-border">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
           <span className="text-xs text-muted-foreground uppercase tracking-wider">
-            LIVE FEED
+            LIVE FEED - INTERACTIVE SIMULATOR
           </span>
         </div>
         <div className="text-xs text-primary font-tactical">
           SECTOR 7-ALPHA | GRID REF: 38°54&apos;17&quot;N 77°00&apos;59&quot;W
         </div>
         <div className="text-xs text-muted-foreground">
-          ZOOM: 1.5x | ALT: 450m
+          HR: {heartRate} BPM | IN COVER: {inCover}
         </div>
       </div>
 
-      {/* Tactical Grid Background */}
-      <div className="absolute inset-0 tactical-grid" />
-
-      {/* Topographic contour lines */}
-      <svg
-        className="absolute inset-0 w-full h-full opacity-20"
-        preserveAspectRatio="none"
-      >
-        <defs>
-          <pattern
-            id="contour"
-            patternUnits="userSpaceOnUse"
-            width="100"
-            height="100"
-          >
-            <path
-              d="M0 50 Q25 30 50 50 T100 50"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="0.5"
-              className="text-primary"
-            />
-          </pattern>
-        </defs>
-        <ellipse
-          cx="30%"
-          cy="40%"
-          rx="20%"
-          ry="15%"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="0.5"
-          className="text-primary/30"
-        />
-        <ellipse
-          cx="30%"
-          cy="40%"
-          rx="15%"
-          ry="10%"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="0.5"
-          className="text-primary/20"
-        />
-        <ellipse
-          cx="70%"
-          cy="60%"
-          rx="25%"
-          ry="18%"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="0.5"
-          className="text-primary/30"
-        />
-        <ellipse
-          cx="70%"
-          cy="60%"
-          rx="18%"
-          ry="12%"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="0.5"
-          className="text-primary/20"
-        />
-        <path
-          d="M10% 80% Q30% 70% 50% 75% T90% 65%"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="0.5"
-          className="text-primary/25"
-        />
-        <path
-          d="M5% 90% Q25% 80% 45% 85% T85% 75%"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="0.5"
-          className="text-primary/20"
-        />
-      </svg>
-
-      {/* Terrain features */}
-      <div className="absolute top-[20%] left-[15%] w-24 h-16 border border-primary/20 rounded bg-primary/5 flex items-center justify-center">
-        <span className="text-[10px] text-primary/50 uppercase">
-          Structure A
-        </span>
-      </div>
-      <div className="absolute top-[55%] right-[20%] w-32 h-20 border border-primary/20 rounded bg-primary/5 flex items-center justify-center">
-        <span className="text-[10px] text-primary/50 uppercase">
-          Compound B
-        </span>
-      </div>
-      <div className="absolute bottom-[25%] left-[40%] w-16 h-16 border border-accent/30 rounded-full bg-accent/10 flex items-center justify-center">
-        <span className="text-[10px] text-accent/60 uppercase">HZ</span>
-      </div>
-
-      {/* Soldier Markers */}
-      {soldiers.map((soldier) => (
-        <button
-          key={soldier.id}
-          onClick={() => onSelectSoldier(soldier.id)}
-          onMouseEnter={() => setHoveredSoldier(soldier.id)}
-          onMouseLeave={() => setHoveredSoldier(null)}
-          className={`absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary ${
-            selectedSoldier === soldier.id ? "scale-125 z-20" : "z-10"
+      {/* Safe Zones (Cover Areas) */}
+      {safeZones.map((zone) => (
+        <div
+          key={zone.id}
+          className={`absolute border-2 border-primary/60 bg-primary/15 flex items-center justify-center backdrop-blur-xs ${
+            zone.isCircle ? "rounded-full" : "rounded"
           }`}
           style={{
-            left: `${soldier.position.x}%`,
-            top: `${soldier.position.y}%`,
+            left: `${zone.x}%`,
+            top: `${zone.y}%`,
+            width: `${zone.w}%`,
+            height: `${zone.h}%`,
+            transform: "translate(-50%, -50%)",
+            boxShadow: "0 0 10px rgba(var(--primary-rgb), 0.3)"
           }}
         >
-          {/* Pulse ring for selected */}
-          {selectedSoldier === soldier.id && (
-            <div
-              className={`absolute inset-0 w-12 h-12 -m-3 rounded-full ${getStatusColor(soldier.status).replace("text-", "bg-")}/20 animate-ping`}
-            />
-          )}
-
-          {/* Marker */}
-          <div
-            className={`relative w-6 h-6 rounded ${getGlowClass(soldier.status)}`}
-          >
-            {/* Diamond shape */}
-            <svg
-              viewBox="0 0 24 24"
-              className={`w-full h-full ${getStatusColor(soldier.status)}`}
-            >
-              <path
-                d="M12 2 L22 12 L12 22 L2 12 Z"
-                fill="currentColor"
-                fillOpacity={soldier.status === "offline" ? 0.3 : 0.8}
-                stroke="currentColor"
-                strokeWidth="1"
-              />
-
-              <text
-                x="12"
-                y="14"
-                textAnchor="middle"
-                className="fill-background text-[8px] font-bold"
-              >
-                {soldier.callsign.charAt(0)}
-              </text>
-            </svg>
-
-            {/* Direction indicator */}
-            <div
-              className={`absolute -top-1 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[4px] border-l-transparent border-r-[4px] border-r-transparent border-b-[6px] ${getStatusColor(soldier.status).replace("text-", "border-b-")}`}
-              style={{
-                transform: `translateX(-50%) rotate(${soldier.heading}deg)`,
-              }}
-            />
-          </div>
-
-          {/* Label */}
-          <div
-            className={`absolute left-full ml-2 top-1/2 -translate-y-1/2 whitespace-nowrap ${
-              hoveredSoldier === soldier.id || selectedSoldier === soldier.id
-                ? "opacity-100"
-                : "opacity-0"
-            } transition-opacity`}
-          >
-            <div className="bg-background/90 border border-border px-2 py-1 rounded text-xs">
-              <div
-                className={`font-bold ${getStatusColor(soldier.status)} text-glow-${soldier.status === "nominal" ? "success" : soldier.status === "warning" ? "warning" : soldier.status === "critical" ? "danger" : ""}`}
-              >
-                {soldier.callsign}
-              </div>
-              <div className="text-muted-foreground text-[10px]">
-                HR: {soldier.heartRate} | BAT: {soldier.battery}%
-              </div>
-            </div>
-          </div>
-        </button>
+          <span className="text-[10px] text-primary/80 uppercase font-bold">
+            {zone.id}
+          </span>
+        </div>
       ))}
 
-      {/* Connection lines between soldiers */}
+      {/* ALPHA-1 Soldier Marker */}
+      <button
+        onMouseDown={(e) => handleMouseDown(e, "soldier")}
+        onClick={() => onSelectSoldier("ALPHA-1")}
+        onMouseEnter={() => setHoveredSoldier("ALPHA-1")}
+        onMouseLeave={() => setHoveredSoldier(null)}
+        className={`absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-100 focus:outline-none focus:ring-2 focus:ring-primary z-20 cursor-pointer`}
+        style={{
+          left: `${soldierPos.x}%`,
+          top: `${soldierPos.y}%`,
+        }}
+      >
+        {/* Pulse ring for active unit */}
+        <div
+          className={`absolute inset-0 w-12 h-12 -m-3 rounded-full ${getStatusColor(soldierStatus).replace("text-", "bg-")}/20 animate-ping`}
+        />
+
+        {/* Marker */}
+        <div className={`relative w-6 h-6 rounded ${getGlowClass(soldierStatus)}`}>
+          {/* Diamond shape */}
+          <svg
+            viewBox="0 0 24 24"
+            className={`w-full h-full ${getStatusColor(soldierStatus)}`}
+          >
+            <path
+              d="M12 2 L22 12 L12 22 L2 12 Z"
+              fill="currentColor"
+              fillOpacity="0.8"
+              stroke="currentColor"
+              strokeWidth="1"
+            />
+            <text
+              x="12"
+              y="14"
+              textAnchor="middle"
+              className="fill-background text-[8px] font-bold"
+            >
+              A
+            </text>
+          </svg>
+
+          {/* Direction indicator */}
+          <div
+            className={`absolute -top-1 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[4px] border-l-transparent border-r-[4px] border-r-transparent border-b-[6px] ${getStatusColor(soldierStatus).replace("text-", "border-b-")}`}
+            style={{
+              transform: `translateX(-50%) rotate(45deg)`,
+            }}
+          />
+        </div>
+
+        {/* Label */}
+        <div
+          className={`absolute left-full ml-2 top-1/2 -translate-y-1/2 whitespace-nowrap ${
+            hoveredSoldier === "ALPHA-1" ? "opacity-100" : "opacity-0"
+          } transition-opacity`}
+        >
+          <div className="bg-background/90 border border-border px-2 py-1 rounded text-xs">
+            <div className={`font-bold ${getStatusColor(soldierStatus)}`}>
+              ALPHA-1
+            </div>
+            <div className="text-muted-foreground text-[10px]">
+              HR: {heartRate} | COVER: {inCover ? "YES" : "NO"}
+            </div>
+          </div>
+        </div>
+      </button>
+
+      {/* HOSTILE Enemy Marker */}
+      <button
+        onMouseDown={(e) => handleMouseDown(e, "enemy")}
+        onClick={() => onSelectSoldier("HOSTILE")}
+        onMouseEnter={() => setHoveredSoldier("HOSTILE")}
+        onMouseLeave={() => setHoveredSoldier(null)}
+        className={`absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-100 focus:outline-none focus:ring-2 focus:ring-destructive z-20 cursor-pointer`}
+        style={{
+          left: `${enemyPos.x}%`,
+          top: `${enemyPos.y}%`,
+        }}
+      >
+        {/* Marker */}
+        <div className="relative w-6 h-6 rounded glow-danger">
+          {/* Square shape for enemy */}
+          <svg
+            viewBox="0 0 24 24"
+            className="w-full h-full text-destructive"
+          >
+            <rect
+              x="4"
+              y="4"
+              width="16"
+              height="16"
+              fill="currentColor"
+              fillOpacity="0.8"
+              stroke="currentColor"
+              strokeWidth="1"
+            />
+            <text
+              x="12"
+              y="14"
+              textAnchor="middle"
+              className="fill-background text-[8px] font-bold"
+            >
+              H
+            </text>
+          </svg>
+
+          {/* Pulsing indicator */}
+          <div className="absolute inset-0 w-6 h-6 rounded border-2 border-destructive/50 animate-pulse" />
+        </div>
+
+        {/* Label */}
+        <div
+          className={`absolute left-full ml-2 top-1/2 -translate-y-1/2 whitespace-nowrap ${
+            hoveredSoldier === "HOSTILE" ? "opacity-100" : "opacity-0"
+          } transition-opacity`}
+        >
+          <div className="bg-background/90 border border-destructive/50 px-2 py-1 rounded text-xs">
+            <div className="font-bold text-destructive">HOSTILE</div>
+            <div className="text-muted-foreground text-[10px]">
+              THREAT: ACTIVE
+            </div>
+          </div>
+        </div>
+      </button>
+
+      {/* Connection line between units */}
       <svg className="absolute inset-0 w-full h-full pointer-events-none">
-        {soldiers.map((soldier, i) =>
-          soldiers
-            .slice(i + 1)
-            .map((other) => (
-              <line
-                key={`${soldier.id}-${other.id}`}
-                x1={`${soldier.position.x}%`}
-                y1={`${soldier.position.y}%`}
-                x2={`${other.position.x}%`}
-                y2={`${other.position.y}%`}
-                stroke="currentColor"
-                strokeWidth="1"
-                strokeDasharray="4 4"
-                className="text-primary/20"
-              />
-            )),
-        )}
+        <line
+          x1={`${soldierPos.x}%`}
+          y1={`${soldierPos.y}%`}
+          x2={`${enemyPos.x}%`}
+          y2={`${enemyPos.y}%`}
+          stroke="currentColor"
+          strokeWidth="1"
+          strokeDasharray="4 4"
+          className="text-primary/30"
+        />
       </svg>
 
       {/* Scale indicator */}
