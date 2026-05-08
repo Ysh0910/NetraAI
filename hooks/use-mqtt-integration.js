@@ -7,10 +7,11 @@ import { useTacticalStore } from "@/lib/store";
 // Default topics defined outside the component so the array reference is
 // stable and never triggers an unnecessary useEffect re-run.
 const DEFAULT_TOPICS = [
-  "tactical/squad/telemetry",
-  "tactical/prototype",
-  "tactical/system/status",
-  "tactical/pi/telemetry",
+  "tactical/squad/telemetry",   // simulation server
+  "tactical/prototype",         // simulation server
+  "tactical/system/status",     // simulation server + pi alerts
+  "battlefield/sensor",         // pi telemetry
+  "battlefield/ai-response",    // pi AI decisions
 ];
 
 /**
@@ -131,6 +132,19 @@ export function useMqttIntegration({
           });
           return;
         }
+
+        // Pi AI decision — log it, don't push into the telemetry store
+        if (topic === "battlefield/ai-response") {
+          addLog({
+            type: "directive",
+            source: "NETRA-AI",
+            message: parsed?.decision ?? "AI decision received",
+            data: { risk_score: parsed?.risk_score, latency_ms: parsed?.latency_ms },
+          });
+          return;
+        }
+
+        // battlefield/sensor and all tactical/* telemetry topics
         updateTacticalData(parsed);
       } catch (err) {
         console.warn("[NETRA-MQTT] store update failed:", err?.message);

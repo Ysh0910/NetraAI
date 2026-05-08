@@ -203,11 +203,13 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
             <div className="flex gap-2">
               <button
                 onClick={() => {
-                  const sent = publishMessage("tactical/commands", {
-                    command: "ping",
-                    target: "pi",
+                  const sent = publishMessage("battlefield/sensor", {
                     timestamp: Date.now(),
-                    message: "Hello from Dashboard!"
+                    soldier: { x: 0, y: 0, heart_rate: 0 },
+                    enemy: { x: 0, y: 0, distance: 0 },
+                    hostage: { x: 0, y: 0 },
+                    environment: "ping",
+                    threat_level: "LOW"
                   });
                   if (sent) {
                     onTriggerEvent({
@@ -223,11 +225,24 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
               </button>
               <button
                 onClick={() => {
-                  const sent = publishMessage("tactical/pi/telemetry", {
-                    x: Math.floor(Math.random() * 500),
-                    y: Math.floor(Math.random() * 500),
-                    heart_rate: 75 + Math.floor(Math.random() * 20),
-                    timestamp: Date.now()
+                  const sent = publishMessage("battlefield/sensor", {
+                    timestamp: Date.now(),
+                    soldier: {
+                      x: Math.floor(Math.random() * 500),
+                      y: Math.floor(Math.random() * 500),
+                      heart_rate: 75 + Math.floor(Math.random() * 20),
+                    },
+                    enemy: {
+                      x: Math.floor(Math.random() * 500),
+                      y: Math.floor(Math.random() * 500),
+                      distance: 50 + Math.floor(Math.random() * 150),
+                    },
+                    hostage: {
+                      x: Math.floor(Math.random() * 500),
+                      y: Math.floor(Math.random() * 500),
+                    },
+                    environment: "urban",
+                    threat_level: "MEDIUM"
                   });
                   if (sent) {
                     onTriggerEvent({
