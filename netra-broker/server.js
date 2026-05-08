@@ -1,0 +1,127 @@
+/**
+ * Netra Tactical Dashboard - MQTT Broker
+ *
+ * Exposes:
+ *   - TCP MQTT  on port 1883 (backend microservices)
+ *   - WS  MQTT  on port 8080 (browser / Next.js frontend)
+ *
+ * Logs client connect/disconnect events and pretty-prints JSON
+ * payloads published on `tactical/prototype`. Malformed JSON is
+ * logged as a warning and never crashes the broker.
+ */
+
+const { Aedes } = require('aedes');
+const aedes = new Aedes();
+const net = require('net');
+const http = require('http');
+const websocketStream = require('websocket-stream');
+
+const TCP_PORT = 1883;
+const WS_PORT = 8080;
+const TARGET_TOPIC = 'tactical/prototype';
+
+const ts = () => new Date().toISOString();
+const log = (...args) => console.log(`[${ts()}]`, ...args);
+const warn = (...args) => console.warn(`[${ts()}] [WARN]`, ...args);
+const err = (...args) => console.error(`[${ts()}] [ERROR]`, ...args);
+
+/* ----------------------------- TCP server ----------------------------- */
+const tcpServer = net.createServer(aedes.handle);
+
+tcpServer.listen(TCP_PORT, () => {
+  log(`MQTT (TCP) broker listening on port ${TCP_PORT}`);
+});
+
+tcpServer.on('error', (e) => {
+  err('TCP server error:', e.message);
+});
+
+/* ------------------------- HTTP + WebSocket -------------------------- */
+const httpServer = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Netra MQTT broker - WebSocket endpoint\n');
+});
+
+websocketStream.createServer({ server: httpServer }, aedes.handle);
+
+httpServer.listen(WS_PORT, () => {
+  log(`MQTT (WebSocket) broker listening on port ${WS_PORT}`);
+});
+
+httpServer.on('error', (e) => {
+  err('HTTP/WS server error:', e.message);
+});
+
+/* ---------------------------- Aedes events --------------------------- */
+aedes.on('client', (client) => {
+  log(`CONNECT  -> client "${client ? client.id : 'unknown'}" connected`);
+});
+
+aedes.on('clientDisconnect', (client) => {
+  log(`DISCONNECT -> client "${client ? client.id : 'unknown'}" disconnected`);
+});
+
+aedes.on('clientError', (client, e) => {
+  warn(`client "${client ? client.id : 'unknown'}" error:`, e.message);
+});
+
+aedes.on('connectionError', (client, e) => {
+  warn(`connection error from "${client ? client.id : 'unknown'}":`, e.message);
+});
+
+aedes.on('subscribe', (subscriptions, client) => {
+  const topics = subscriptions.map((s) => s.topic).join(', ');
+  log(`SUBSCRIBE -> "${client ? client.id : 'unknown'}" -> [${topics}]`);
+});
+
+aedes.on('unsubscribe', (subscriptions, client) => {
+  log(`UNSUBSCRIBE -> "${client ? client.id : 'unknown'}" -> [${subscriptions.join(', ')}]`);
+});
+
+aedes.on('publish', (packet, client) => {
+  if (!client) return; // ignore broker-internal $SYS messages
+  if (packet.topic !== TARGET_TOPIC) {
+    log(`PUBLISH  -> "${client.id}" -> ${packet.topic} (${packet.payload.length} bytes)`);
+    return;
+  }
+
+  const raw = packet.payload ? packet.payload.toString('utf8') : '';
+  try {
+    const data = JSON.parse(raw);
+    log(`PUBLISH  -> "${client.id}" -> ${packet.topic}:`);
+    console.log(JSON.stringify(data, null, 2));
+  } catch (e) {
+    warn(
+      `Malformed JSON on "${packet.topic}" from "${client.id}":`,
+      e.message,
+      '| raw payload:',
+      raw
+    );
+  }
+});
+
+/* --------------------- Process-level safety nets --------------------- */
+process.on('uncaughtException', (e) => {
+  err('uncaughtException:', e && e.stack ? e.stack : e);
+});
+
+process.on('unhandledRejection', (reason) => {
+  err('unhandledRejection:', reason);
+});
+
+const shutdown = (signal) => {
+  log(`Received ${signal}, shutting down gracefully...`);
+  aedes.close(() => {
+    tcpServer.close(() => {
+      httpServer.close(() => {
+        log('Broker shut down cleanly.');
+        process.exit(0);
+      });
+    });
+  });
+  // Force exit if cleanup hangs.
+  setTimeout(() => process.exit(1), 5000).unref();
+};
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

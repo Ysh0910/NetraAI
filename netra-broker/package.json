@@ -1,0 +1,20 @@
+{
+  "name": "netra-broker",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "aedes": "^1.0.2",
+    "mqtt": "^5.15.1",
+    "websocket-stream": "^5.5.2"
+  }
+}
