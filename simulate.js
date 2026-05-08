@@ -1,37 +1,59 @@
+
 'use strict';
 
 const mqtt = require('mqtt');
 
 // ─────────────────────────────────────────────────────────────
-//  SECTION 1 — MAP & ZONE DEFINITIONS
+//  SECTION 1 — MAP BOUNDS & TACTICAL GRID
 // ─────────────────────────────────────────────────────────────
 
-const ZONES = {
-  GLOBAL_MAP: {
-    minLat: 12.9700, maxLat: 12.9800,
-    minLng: 77.5900, maxLng: 77.6000,
-  },
-  COMMAND_CENTER: {
-    // Northern half — safer zone
-    minLat: 12.9750, maxLat: 12.9800,
-    minLng: 77.5900, maxLng: 77.6000,
-  },
-  HOSTILE_TERRITORY: {
-    // Southern half — active combat zone
-    minLat: 12.9700, maxLat: 12.9750,
-    minLng: 77.5900, maxLng: 77.6000,
-  },
+// GPS boundary of the battlefield (Vidhana Soudha area, Bangalore)
+// These must match the Leaflet map corners on the frontend exactly.
+const MAP_BOUNDS = {
+  north: 12.9800,
+  south: 12.9790,
+  west:  77.5915,
+  east:  77.5935,
 };
+
+// Tactical collision matrix — 0 = walkable, 1 = wall/building
+// Generated from the Vidhana Soudha satellite extraction.
+const VIDHANA_GRID = [
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+];
+
+const GRID_ROWS = VIDHANA_GRID.length;
+const GRID_COLS = VIDHANA_GRID[0].length;
 
 // ─────────────────────────────────────────────────────────────
 //  SECTION 2 — UTILITY FUNCTIONS
 // ─────────────────────────────────────────────────────────────
 
-// Box-Muller transform — produces Gaussian (bell-curve) distributed noise
+// Box-Muller transform — Gaussian (bell-curve) noise for realistic movement
 function gaussianNoise(scale = 1) {
-  let u1, u2;
+  let u1;
   do { u1 = Math.random(); } while (u1 === 0);
-  u2 = Math.random();
+  const u2 = Math.random();
   const z = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
   return z * scale;
 }
@@ -41,7 +63,23 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-// Approximate distance in meters between two GPS coordinates (flat-earth, valid < 1km)
+// Converts a GPS coordinate to a grid cell and checks if it's a wall (1)
+// Returns true if the position is blocked or out of bounds
+function isPathBlocked(lat, lng) {
+  // Latitude decreases going south (down the rows), so invert it
+  const latPct = (MAP_BOUNDS.north - lat) / (MAP_BOUNDS.north - MAP_BOUNDS.south);
+  const lngPct = (lng - MAP_BOUNDS.west)  / (MAP_BOUNDS.east  - MAP_BOUNDS.west);
+
+  const row = Math.floor(latPct * GRID_ROWS);
+  const col = Math.floor(lngPct * GRID_COLS);
+
+  // Out of bounds → treat as wall
+  if (row < 0 || row >= GRID_ROWS || col < 0 || col >= GRID_COLS) return true;
+
+  return VIDHANA_GRID[row][col] === 1;
+}
+
+// Approximate distance in meters between two GPS points (flat-earth, valid < 1km)
 function distanceMeters(lat1, lng1, lat2, lng2) {
   const metersPerDegLat = 111000;
   const metersPerDegLng = 111000 * Math.cos((lat1 * Math.PI) / 180);
@@ -55,46 +93,46 @@ function distanceMeters(lat1, lng1, lat2, lng2) {
 // ─────────────────────────────────────────────────────────────
 
 class Soldier {
-  constructor(id, lat, lng, assignedZone) {
-    this.id           = id;
-    this.lat          = lat;
-    this.lng          = lng;
-    this.heartRate    = 72 + Math.floor(Math.random() * 10);
-    this.battery      = 95 + Math.floor(Math.random() * 6);
-    this.assignedZone = assignedZone;
-    this.trustScore   = 1.0;
+  constructor(id, lat, lng) {
+    this.id        = id;
+    this.lat       = lat;
+    this.lng       = lng;
+    this.heartRate = 72 + Math.floor(Math.random() * 10); // 72–82 bpm baseline
+    this.battery   = 95 + Math.floor(Math.random() * 6);  // 95–100%
+    this.trustScore = 1.0;
 
-    // Sensor drift state
-    this._jammed      = false;
-    this._driftLat    = 0;
-    this._driftLng    = 0;
+    // Sensor drift state — activated by jam_sensor command
+    this._jammed   = false;
+    this._driftLat = 0;
+    this._driftLng = 0;
 
-    // Casualty flag
-    this._casualty    = false;
+    // Casualty flag — freezes all updates when true
+    this._casualty = false;
   }
 
   // Called once per second — advances position, HR, battery, and drift
   tick() {
     if (this._casualty) return;
 
-    const zone = ZONES[this.assignedZone];
-
     // Gaussian random walk — scale ≈ 5.5 meters per step
-    this.lat += gaussianNoise(0.00005);
-    this.lng += gaussianNoise(0.00005);
+    const nextLat = this.lat + gaussianNoise(0.00005);
+    const nextLng = this.lng + gaussianNoise(0.00005);
 
-    // Clamp to assigned zone boundary
-    this.lat = clamp(this.lat, zone.minLat, zone.maxLat);
-    this.lng = clamp(this.lng, zone.minLng, zone.maxLng);
+    // Only commit the move if the new cell is walkable (collision check)
+    // If blocked, the soldier stays in place this tick (wall bounce)
+    if (!isPathBlocked(nextLat, nextLng)) {
+      this.lat = nextLat;
+      this.lng = nextLng;
+    }
 
     // Heart rate fluctuation ±2 bpm, clamped to physiological range
     this.heartRate += Math.round(gaussianNoise(2));
     this.heartRate = clamp(this.heartRate, 55, 130);
 
-    // Battery drains ~0.01% per second
+    // Battery drains ~0.01% per second → full drain in ~2.7 hours
     this.battery = Math.max(0, parseFloat((this.battery - 0.01).toFixed(2)));
 
-    // Accumulate GPS drift if sensor is jammed
+    // Accumulate GPS drift if sensor is jammed (≈3m/s drift)
     if (this._jammed) {
       this._driftLat += gaussianNoise(0.00003);
       this._driftLng += gaussianNoise(0.00003);
@@ -104,27 +142,17 @@ class Soldier {
   // Returns the serializable state — reported GPS includes drift if jammed
   toJSON() {
     return {
-      id:           this.id,
-      lat:          parseFloat((this.lat + this._driftLat).toFixed(6)),
-      lng:          parseFloat((this.lng + this._driftLng).toFixed(6)),
-      heartRate:    this._casualty ? 0 : this.heartRate,
-      battery:      this.battery,
-      assignedZone: this.assignedZone,
-      trustScore:   parseFloat(this.trustScore.toFixed(2)),
-      status:       this._casualty ? 'CASUALTY' : this._jammed ? 'SENSOR_JAMMED' : 'ACTIVE',
+      id:         this.id,
+      lat:        parseFloat((this.lat + this._driftLat).toFixed(6)),
+      lng:        parseFloat((this.lng + this._driftLng).toFixed(6)),
+      heartRate:  this._casualty ? 0 : this.heartRate,
+      battery:    this.battery,
+      trustScore: parseFloat(this.trustScore.toFixed(2)),
+      status:     this._casualty ? 'CASUALTY' : this._jammed ? 'SENSOR_JAMMED' : 'ACTIVE',
     };
   }
 
   // ── Command Handlers ──────────────────────────────────────
-
-  cmdRedeploy(newZone) {
-    if (!ZONES[newZone]) {
-      console.warn(`[WARN] Unknown zone: ${newZone}. Ignoring redeploy for ${this.id}.`);
-      return;
-    }
-    console.log(`[CMD] ${this.id} redeployed from ${this.assignedZone} → ${newZone}`);
-    this.assignedZone = newZone;
-  }
 
   cmdCasualty() {
     console.log(`[CMD] ${this.id} marked as CASUALTY.`);
@@ -133,6 +161,7 @@ class Soldier {
     this.trustScore = 0.0;
   }
 
+  // Sensor jam: GPS starts drifting slowly, trust score drops
   cmdJamSensor() {
     console.log(`[CMD] ${this.id} sensor JAMMED. Initiating drift.`);
     this._jammed = true;
@@ -144,24 +173,25 @@ class Soldier {
 //  SECTION 4 — SQUAD INITIALIZATION
 // ─────────────────────────────────────────────────────────────
 
-// Alpha & Bravo → COMMAND_CENTER (north), Charlie & Delta → HOSTILE_TERRITORY (south)
+// All four soldiers spawn inside MAP_BOUNDS in walkable (0) cells
 const squad = {
-  Alpha:   new Soldier('Alpha',   12.9780, 77.5920, 'COMMAND_CENTER'),
-  Bravo:   new Soldier('Bravo',   12.9760, 77.5970, 'COMMAND_CENTER'),
-  Charlie: new Soldier('Charlie', 12.9720, 77.5930, 'HOSTILE_TERRITORY'),
-  Delta:   new Soldier('Delta',   12.9710, 77.5980, 'HOSTILE_TERRITORY'),
+  Alpha:   new Soldier('Alpha',   12.9795, 77.5925),
+  Bravo:   new Soldier('Bravo',   12.9796, 77.5924),
+  Charlie: new Soldier('Charlie', 12.9794, 77.5926),
+  Delta:   new Soldier('Delta',   12.9795, 77.5923),
 };
 
 // ─────────────────────────────────────────────────────────────
 //  SECTION 5 — MQTT CLIENT & RESILIENCE
 // ─────────────────────────────────────────────────────────────
 
+// Change this to the broker machine's IP if running across devices
 const BROKER_URL = 'mqtt://localhost:1883';
 
 const client = mqtt.connect(BROKER_URL, {
   clientId:        'NETRA_SimulationEngine_v2',
-  reconnectPeriod: 3000,   // retry every 3s on disconnect
-  connectTimeout:  10000,  // give up connecting after 10s, then retry
+  reconnectPeriod: 3000,   // auto-retry every 3s on disconnect
+  connectTimeout:  10000,  // abandon attempt after 10s, then retry
   keepalive:       30,     // PINGREQ every 30s to keep TCP alive
   clean:           true,
   will: {
@@ -181,6 +211,7 @@ let simulationInterval = null;
 
 client.on('connect', () => {
   console.log('[NETRA] ✓ Connected to MQTT Broker at', BROKER_URL);
+  console.log(`[NETRA] ✓ Tactical grid loaded: ${GRID_ROWS} rows × ${GRID_COLS} cols`);
 
   client.publish(
     'tactical/system/status',
@@ -196,7 +227,7 @@ client.on('connect', () => {
     }
   });
 
-  // Start the 1Hz loop only once — guard against duplicate intervals on reconnect
+  // Guard against duplicate intervals on reconnect
   if (!simulationInterval) {
     simulationInterval = setInterval(simulationTick, 1000);
     console.log('[NETRA] ✓ Simulation loop started at 1 Hz');
@@ -208,8 +239,8 @@ client.on('reconnect', () => {
 });
 
 client.on('offline', () => {
-  // Simulation keeps running locally — state stays fresh, publishes resume on reconnect
-  console.warn('[NETRA] ✗ Client is offline. Simulation continues locally, will sync on reconnect.');
+  // Simulation keeps running locally — publishes resume on reconnect
+  console.warn('[NETRA] ✗ Client offline. Simulation continues locally.');
 });
 
 client.on('error', (err) => {
@@ -225,7 +256,6 @@ client.on('close', () => {
 // ─────────────────────────────────────────────────────────────
 
 // Expected command format on topic 'tactical/commands':
-//   { "command": "redeploy",   "target": "Alpha",   "zone": "HOSTILE_TERRITORY" }
 //   { "command": "casualty",   "target": "Charlie" }
 //   { "command": "jam_sensor", "target": "Bravo" }
 client.on('message', (topic, messageBuffer) => {
@@ -235,23 +265,22 @@ client.on('message', (topic, messageBuffer) => {
   try {
     cmd = JSON.parse(messageBuffer.toString());
   } catch (e) {
-    console.error('[CMD] Malformed command payload — not valid JSON:', messageBuffer.toString());
+    console.error('[CMD] Malformed payload — not valid JSON:', messageBuffer.toString());
     return;
   }
 
-  const { command, target, zone } = cmd;
+  const { command, target } = cmd;
 
   if (!target || !squad[target]) {
-    console.warn(`[CMD] Unknown target soldier: "${target}". Valid targets: ${Object.keys(squad).join(', ')}`);
+    console.warn(`[CMD] Unknown target: "${target}". Valid: ${Object.keys(squad).join(', ')}`);
     return;
   }
 
   const soldier = squad[target];
 
   switch (command) {
-    case 'redeploy':   soldier.cmdRedeploy(zone); break;
-    case 'casualty':   soldier.cmdCasualty();     break;
-    case 'jam_sensor': soldier.cmdJamSensor();    break;
+    case 'casualty':   soldier.cmdCasualty();  break;
+    case 'jam_sensor': soldier.cmdJamSensor(); break;
     default:
       console.warn(`[CMD] Unknown command: "${command}"`);
   }
@@ -284,24 +313,23 @@ function simulationTick() {
   }
 
   // 4. Console summary
-  const alpha   = squad.Alpha.toJSON();
-  const charlie = squad.Charlie.toJSON();
-  console.log(
-    `[TICK ${String(payload.tick).padStart(4, '0')}]` +
-    ` Alpha HR:${alpha.heartRate} Bat:${alpha.battery}%` +
-    ` | Charlie HR:${charlie.heartRate} Status:${charlie.status}` +
-    ` | Broker: ${client.connected ? 'CONNECTED' : 'OFFLINE'}`
+  const a = squad.Alpha.toJSON();
+  const c = squad.Charlie.toJSON();
+  process.stdout.write(
+    `\r[TICK ${String(payload.tick).padStart(4, '0')}]` +
+    ` Alpha HR:${a.heartRate} Bat:${a.battery}%` +
+    ` | Charlie HR:${c.heartRate} Status:${c.status}` +
+    ` | Broker:${client.connected ? 'OK' : 'OFFLINE'}   `
   );
 }
 
-// Static counter on the function object — avoids a global variable
 simulationTick._count = 0;
 
 // ─────────────────────────────────────────────────────────────
 //  SECTION 9 — GRACEFUL SHUTDOWN
 // ─────────────────────────────────────────────────────────────
 
-// Ctrl+C → stop loop → publish SHUTDOWN → clean disconnect (prevents false Last Will trigger)
+// Ctrl+C → stop loop → publish SHUTDOWN → clean disconnect
 process.on('SIGINT', () => {
   console.log('\n[NETRA] Shutdown signal received. Cleaning up...');
 
