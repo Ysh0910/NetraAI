@@ -1,0 +1,23 @@
+{
+  "name": "netra-simulation",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ysh0910/NetraAI.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Ysh0910/NetraAI/issues"
+  },
+  "homepage": "https://github.com/Ysh0910/NetraAI#readme",
+  "description": "",
+  "dependencies": {
+    "mqtt": "5.15.1"
+  }
+}
