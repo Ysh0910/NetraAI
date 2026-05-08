@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { publishMessage } from "@/hooks/use-mqtt-integration";
 
 export function SimulationPanel({ soldiers, onTriggerEvent }) {
   const [isExpanded, setIsExpanded] = useState(true);
@@ -190,6 +191,55 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
                 className="flex-1 px-2 py-1.5 rounded border border-accent/50 text-accent text-[10px] uppercase tracking-wide hover:bg-accent/10 transition-colors"
               >
                 Random Event
+              </button>
+            </div>
+          </div>
+
+          {/* Pi Test Section */}
+          <div className="pt-2 border-t border-border mt-2">
+            <label className="text-[10px] text-primary uppercase tracking-wider block mb-2">
+              Raspberry Pi Link
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  const sent = publishMessage("tactical/commands", {
+                    command: "ping",
+                    target: "pi",
+                    timestamp: Date.now(),
+                    message: "Hello from Dashboard!"
+                  });
+                  if (sent) {
+                    onTriggerEvent({
+                      type: "piMessage",
+                      targetId: "system",
+                      timestamp: new Date().toISOString(),
+                    });
+                  }
+                }}
+                className="flex-1 px-2 py-1.5 rounded border border-primary/50 text-primary text-[10px] uppercase tracking-wide hover:bg-primary/10 transition-colors"
+              >
+                Send Test
+              </button>
+              <button
+                onClick={() => {
+                  const sent = publishMessage("tactical/pi/telemetry", {
+                    x: Math.floor(Math.random() * 500),
+                    y: Math.floor(Math.random() * 500),
+                    heart_rate: 75 + Math.floor(Math.random() * 20),
+                    timestamp: Date.now()
+                  });
+                  if (sent) {
+                    onTriggerEvent({
+                      type: "piTelemetry",
+                      targetId: "system",
+                      timestamp: new Date().toISOString(),
+                    });
+                  }
+                }}
+                className="flex-1 px-2 py-1.5 rounded border border-primary/50 text-primary text-[10px] uppercase tracking-wide hover:bg-primary/10 transition-colors"
+              >
+                Sim Pi Data
               </button>
             </div>
           </div>

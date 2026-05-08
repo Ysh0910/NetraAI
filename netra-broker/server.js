@@ -13,7 +13,8 @@
 const { Aedes } = require('aedes');
 const net = require('net');
 const http = require('http');
-const websocketStream = require('websocket-stream');
+const WebSocket = require('ws');
+const { createWebSocketStream } = require('ws');
 
 const TCP_PORT = 1883;
 const WS_PORT = 8080;
@@ -40,11 +41,27 @@ async function main() {
 
   /* ----------------------- HTTP + WebSocket ------------------------ */
   httpServer = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    // CORS headers allow the browser (Next.js on :3000) to upgrade to WS on :8080
+    res.writeHead(200, {
+      'Content-Type': 'text/plain',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Origin, X-Requested-With, Content-Type, Accept',
+    });
     res.end('Netra MQTT broker - WebSocket endpoint\n');
   });
-  websocketStream.createServer({ server: httpServer }, aedes.handle);
-  httpServer.on('error', (e) => err('HTTP/WS server error:', e.message));
+  
+  // Create WebSocket server attached to HTTP server
+  const wss = new WebSocket.Server({ server: httpServer });
+  
+  wss.on('connection', (ws, req) => {
+    // Pass only the duplex stream — aedes.handle does not accept a second argument
+    const stream = createWebSocketStream(ws);
+    aedes.handle(stream);
+  });
+  
+  wss.on('error', (e) => err('WebSocket server error:', e.message));
+  
+  httpServer.on('error', (e) => err('HTTP server error:', e.message));
   httpServer.listen(WS_PORT, () => {
     log(`MQTT (WebSocket) broker listening on port ${WS_PORT}`);
   });
