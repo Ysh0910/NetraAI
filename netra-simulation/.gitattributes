@@ -1,0 +1,7 @@
+# Normalize line endings for all JS/JSON files checked into this repo
+*.js    text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+
+# Treat node_modules as binary — don't touch line endings at all
+node_modules/** binary

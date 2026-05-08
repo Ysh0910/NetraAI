@@ -1,8 +1,12 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useTacticalStore } from "@/lib/store";
+import { isPositionBlocked, findNearestValidPosition } from "@/lib/tactical-grid";
 
 export function TacticalMap({ soldiers, selectedSoldier, onSelectSoldier }) {
+  const hasLiveTelemetry = useTacticalStore((s) => s.hasLiveTelemetry);
+  const liveSquad = Array.isArray(soldiers) ? soldiers : [];
   const [hoveredSoldier, setHoveredSoldier] = useState(null);
   const mapRef = useRef(null);
 
@@ -14,17 +18,15 @@ export function TacticalMap({ soldiers, selectedSoldier, onSelectSoldier }) {
   const [dragging, setDragging] = useState(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 
-  // Telemetry data
+  // Telemetry data (for legacy debug markers only)
   const [inCover, setInCover] = useState(0);
   const [heartRate, setHeartRate] = useState(75);
   const [soldierStatus, setSoldierStatus] = useState("nominal");
 
-  // Safe zones (cover areas) - define as percentage-based coordinates
-  const safeZones = [
-    { id: "Structure A", x: 15, y: 20, w: 15, h: 10 },
-    { id: "Compound B", x: 60, y: 55, w: 20, h: 15 },
-    { id: "HZ", x: 40, y: 25, w: 8, h: 8, isCircle: true },
-  ];
+  // Drag state for live squad markers
+  const [draggingSoldier, setDraggingSoldier] = useState(null);
+  const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
+  const [dragStartMouse, setDragStartMouse] = useState({ x: 0, y: 0 });
 
   const getStatusColor = useCallback((status) => {
     switch (status) {
@@ -52,30 +54,9 @@ export function TacticalMap({ soldiers, selectedSoldier, onSelectSoldier }) {
     }
   }, []);
 
-  // Collision detection: Check if soldier is in cover
-  const checkCover = useCallback((pos) => {
-    for (const zone of safeZones) {
-      if (zone.isCircle) {
-        // Circle collision
-        const dx = pos.x - zone.x;
-        const dy = pos.y - zone.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        if (distance <= zone.w / 2) {
-          return 1;
-        }
-      } else {
-        // Rectangle collision
-        if (
-          pos.x >= zone.x &&
-          pos.x <= zone.x + zone.w &&
-          pos.y >= zone.y &&
-          pos.y <= zone.y + zone.h
-        ) {
-          return 1;
-        }
-      }
-    }
-    return 0;
+  // Collision detection: Check if position hits a wall using the tactical grid
+  const checkWallCollision = useCallback((pos) => {
+    return isPositionBlocked(pos.x, pos.y);
   }, []);
 
   // Calculate distance between soldier and enemy
@@ -108,7 +89,7 @@ export function TacticalMap({ soldiers, selectedSoldier, onSelectSoldier }) {
     return "critical";
   }, []);
 
-  // Drag handlers
+  // Drag handlers for legacy debug markers
   const handleMouseDown = (e, unitType) => {
     if (!mapRef.current) return;
     
@@ -126,29 +107,84 @@ export function TacticalMap({ soldiers, selectedSoldier, onSelectSoldier }) {
   };
 
   const handleMouseMove = (e) => {
-    if (!dragging || !mapRef.current) return;
+    if (!mapRef.current) return;
 
-    const rect = mapRef.current.getBoundingClientRect();
-    const moveX = ((e.clientX - rect.left) / rect.width) * 100;
-    const moveY = ((e.clientY - rect.top) / rect.height) * 100;
+    // Handle legacy marker dragging
+    if (dragging) {
+      const rect = mapRef.current.getBoundingClientRect();
+      const moveX = ((e.clientX - rect.left) / rect.width) * 100;
+      const moveY = ((e.clientY - rect.top) / rect.height) * 100;
 
-    const newX = Math.max(0, Math.min(100, moveX - dragOffset.x));
-    const newY = Math.max(0, Math.min(100, moveY - dragOffset.y));
+      const newX = Math.max(0, Math.min(100, moveX - dragOffset.x));
+      const newY = Math.max(0, Math.min(100, moveY - dragOffset.y));
 
-    if (dragging === "soldier") {
-      setSoldierPos({ x: newX, y: newY });
-    } else if (dragging === "enemy") {
-      setEnemyPos({ x: newX, y: newY });
+      if (dragging === "soldier") {
+        setSoldierPos({ x: newX, y: newY });
+      } else if (dragging === "enemy") {
+        setEnemyPos({ x: newX, y: newY });
+      }
+    }
+
+    // Handle live squad dragging
+    if (draggingSoldier && mapRef.current) {
+      const rect = mapRef.current.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      // Calculate delta from drag start
+      const deltaX = ((mouseX - dragStartMouse.x) / rect.width) * 100;
+      const deltaY = ((mouseY - dragStartMouse.y) / rect.height) * 100;
+
+      let newX = dragStartPos.x + deltaX;
+      let newY = dragStartPos.y + deltaY;
+
+      // Clamp to bounds
+      newX = Math.max(2, Math.min(98, newX));
+      newY = Math.max(2, Math.min(98, newY));
+
+      // Check collision - if hitting wall, try to find nearest valid position
+      if (isPositionBlocked(newX, newY)) {
+        const validPos = findNearestValidPosition(newX, newY, 5);
+        newX = validPos.x;
+        newY = validPos.y;
+      }
+
+      // Update store with new position
+      const patchSoldier = useTacticalStore.getState().patchSoldier;
+      patchSoldier(draggingSoldier, {
+        position: { x: newX, y: newY }
+      });
     }
   };
 
   const handleMouseUp = () => {
     setDragging(null);
+    setDraggingSoldier(null);
+  };
+
+  // Handle drag start for live squad markers
+  const handleSoldierMouseDown = (e, soldierId) => {
+    if (!mapRef.current) return;
+    e.stopPropagation();
+
+    const rect = mapRef.current.getBoundingClientRect();
+    const soldier = liveSquad.find(s => s?.id === soldierId);
+    if (!soldier) return;
+
+    setDraggingSoldier(soldierId);
+    setDragStartPos({
+      x: soldier?.position?.x ?? 50,
+      y: soldier?.position?.y ?? 50
+    });
+    setDragStartMouse({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    });
   };
 
   // Update telemetry data whenever positions change
   useEffect(() => {
-    const newCover = checkCover(soldierPos);
+    const newCover = checkWallCollision(soldierPos) ? 0 : 1;
     setInCover(newCover);
 
     const distance = calculateDistance(soldierPos, enemyPos);
@@ -157,7 +193,7 @@ export function TacticalMap({ soldiers, selectedSoldier, onSelectSoldier }) {
 
     const newStatus = getHeartRateStatus(newHeartRate);
     setSoldierStatus(newStatus);
-  }, [soldierPos, enemyPos, checkCover, calculateDistance, calculateHeartRate, getHeartRateStatus]);
+  }, [soldierPos, enemyPos, checkWallCollision, calculateDistance, calculateHeartRate, getHeartRateStatus]);
 
   // Output telemetry payload
   useEffect(() => {
@@ -211,27 +247,57 @@ export function TacticalMap({ soldiers, selectedSoldier, onSelectSoldier }) {
         </div>
       </div>
 
-      {/* Safe Zones (Cover Areas) */}
-      {safeZones.map((zone) => (
-        <div
-          key={zone.id}
-          className={`absolute border-2 border-primary/60 bg-primary/15 flex items-center justify-center backdrop-blur-xs ${
-            zone.isCircle ? "rounded-full" : "rounded"
-          }`}
-          style={{
-            left: `${zone.x}%`,
-            top: `${zone.y}%`,
-            width: `${zone.w}%`,
-            height: `${zone.h}%`,
-            transform: "translate(-50%, -50%)",
-            boxShadow: "0 0 10px rgba(var(--primary-rgb), 0.3)"
-          }}
-        >
-          <span className="text-[10px] text-primary/80 uppercase font-bold">
-            {zone.id}
-          </span>
-        </div>
-      ))}
+      {/* Live squad overlay (draggable, with wall collision) */}
+      {liveSquad.map((s) => {
+        const px = s?.position?.x ?? 50;
+        const py = s?.position?.y ?? 50;
+        const status = s?.status ?? "offline";
+        const callsign = s?.callsign ?? s?.id ?? "UNIT";
+        const isDragging = draggingSoldier === s?.id;
+        const ringColor =
+          status === "critical"
+            ? "bg-destructive"
+            : status === "warning"
+              ? "bg-accent"
+              : status === "offline"
+                ? "bg-muted-foreground"
+                : "bg-success";
+        const textColor =
+          status === "critical"
+            ? "text-destructive"
+            : status === "warning"
+              ? "text-accent"
+              : status === "offline"
+                ? "text-muted-foreground"
+                : "text-success";
+        return (
+          <div
+            key={`live-${s?.id ?? callsign}`}
+            className={`absolute z-10 cursor-move select-none ${isDragging ? "z-30" : "z-10"}`}
+            style={{
+              left: `${px}%`,
+              top: `${py}%`,
+              transform: "translate(-50%, -50%)",
+              transition: isDragging ? "none" : "left 600ms linear, top 600ms linear",
+            }}
+            onMouseDown={(e) => handleSoldierMouseDown(e, s?.id)}
+          >
+            <div className="relative flex items-center justify-center">
+              <div
+                className={`absolute w-8 h-8 rounded-full ${ringColor}/15 animate-ping`}
+              />
+              <div
+                className={`relative w-3 h-3 rounded-full ${ringColor} border border-background ${isDragging ? "scale-125" : ""} transition-transform`}
+              />
+              <div
+                className={`absolute left-full ml-1.5 whitespace-nowrap text-[9px] font-tactical uppercase tracking-wider ${textColor}`}
+              >
+                {callsign}
+              </div>
+            </div>
+          </div>
+        );
+      })}
 
       {/* ALPHA-1 Soldier Marker */}
       <button

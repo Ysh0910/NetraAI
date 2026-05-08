@@ -11,7 +11,6 @@
  */
 
 const { Aedes } = require('aedes');
-const aedes = new Aedes();
 const net = require('net');
 const http = require('http');
 const websocketStream = require('websocket-stream');
@@ -25,32 +24,40 @@ const log = (...args) => console.log(`[${ts()}]`, ...args);
 const warn = (...args) => console.warn(`[${ts()}] [WARN]`, ...args);
 const err = (...args) => console.error(`[${ts()}] [ERROR]`, ...args);
 
-/* ----------------------------- TCP server ----------------------------- */
-const tcpServer = net.createServer(aedes.handle);
+let aedes;
+let tcpServer;
+let httpServer;
 
-tcpServer.listen(TCP_PORT, () => {
-  log(`MQTT (TCP) broker listening on port ${TCP_PORT}`);
+async function main() {
+  aedes = await Aedes.createBroker();
+
+  /* --------------------------- TCP server --------------------------- */
+  tcpServer = net.createServer(aedes.handle);
+  tcpServer.on('error', (e) => err('TCP server error:', e.message));
+  tcpServer.listen(TCP_PORT, () => {
+    log(`MQTT (TCP) broker listening on port ${TCP_PORT}`);
+  });
+
+  /* ----------------------- HTTP + WebSocket ------------------------ */
+  httpServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Netra MQTT broker - WebSocket endpoint\n');
+  });
+  websocketStream.createServer({ server: httpServer }, aedes.handle);
+  httpServer.on('error', (e) => err('HTTP/WS server error:', e.message));
+  httpServer.listen(WS_PORT, () => {
+    log(`MQTT (WebSocket) broker listening on port ${WS_PORT}`);
+  });
+
+  attachAedesEvents();
+}
+
+main().catch((e) => {
+  err('Failed to start broker:', e && e.stack ? e.stack : e);
+  process.exit(1);
 });
 
-tcpServer.on('error', (e) => {
-  err('TCP server error:', e.message);
-});
-
-/* ------------------------- HTTP + WebSocket -------------------------- */
-const httpServer = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Netra MQTT broker - WebSocket endpoint\n');
-});
-
-websocketStream.createServer({ server: httpServer }, aedes.handle);
-
-httpServer.listen(WS_PORT, () => {
-  log(`MQTT (WebSocket) broker listening on port ${WS_PORT}`);
-});
-
-httpServer.on('error', (e) => {
-  err('HTTP/WS server error:', e.message);
-});
+function attachAedesEvents() {
 
 /* ---------------------------- Aedes events --------------------------- */
 aedes.on('client', (client) => {
@@ -99,6 +106,8 @@ aedes.on('publish', (packet, client) => {
     );
   }
 });
+
+}
 
 /* --------------------- Process-level safety nets --------------------- */
 process.on('uncaughtException', (e) => {
