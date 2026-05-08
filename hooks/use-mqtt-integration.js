@@ -14,7 +14,7 @@ import { useTacticalStore } from "@/lib/store";
  */
 export function useMqttIntegration({
   url = "ws://localhost:8080",
-  topics = ["tactical/squad/telemetry", "tactical/prototype", "tactical/system/status"],
+  topics = ["tactical/squad/telemetry", "tactical/prototype", "tactical/system/status", "tactical/pi/telemetry"],
 } = {}) {
   const setBrokerStatus = useTacticalStore((s) => s.setBrokerStatus);
   const updateTacticalData = useTacticalStore((s) => s.updateTacticalData);
