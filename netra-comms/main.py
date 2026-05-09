@@ -1,0 +1,393 @@
+"""
+N.E.T.R.A. Comms Microservice
+FastAPI server for Speech-to-Text (Vosk) and Text-to-Speech (Piper)
+"""
+
+import os
+import io
+import shutil
+import subprocess
+import tempfile
+import logging
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from pydub import AudioSegment
+from vosk import Model, KaldiRecognizer
+
+# ─────────────────────────────────────────────────────────────
+#  CONFIGURATION & PATHS
+# ─────────────────────────────────────────────────────────────
+
+BASE_DIR = Path(__file__).parent
+VOSK_MODEL_PATH = BASE_DIR / "models" / "vosk"
+PIPER_MODEL_PATH = BASE_DIR / "models" / "piper"
+TEMP_DIR = BASE_DIR / "temp"
+
+def find_piper_executable():
+    """Find Piper executable from common locations or PATH."""
+    # Check env var first
+    env_piper = os.getenv("PIPER_EXECUTABLE")
+    if env_piper and shutil.which(env_piper):
+        return env_piper
+    
+    # Check PATH
+    if shutil.which("piper"):
+        return "piper"
+    
+    # Check common Windows locations
+    common_paths = [
+        r"C:\Program Files\piper\piper\piper.exe",
+        r"C:\Tools\piper\piper.exe",
+        r"C:\piper\piper.exe",
+    ]
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+    
+    # Fallback to env var or default
+    return env_piper or "piper"
+
+PIPER_EXECUTABLE = find_piper_executable()
+DEFAULT_VOICE_SPEED = 1.0
+SAMPLE_RATE = 16000
+
+# Ensure temp directory exists
+TEMP_DIR.mkdir(exist_ok=True)
+
+# ─────────────────────────────────────────────────────────────
+#  LOGGING SETUP
+# ─────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────
+#  MODEL INITIALIZATION
+# ─────────────────────────────────────────────────────────────
+
+vosk_model: Optional[Model] = None
+vosk_ready = False
+piper_ready = False
+
+
+def check_models():
+    """Check if required models are present. Log warnings but don't crash."""
+    global vosk_ready, piper_ready
+
+    # Check Vosk model (look recursively for .mdl or .bin files)
+    if VOSK_MODEL_PATH.exists():
+        model_files = list(VOSK_MODEL_PATH.rglob("*.bin")) + list(VOSK_MODEL_PATH.rglob("*.mdl"))
+        if model_files:
+            vosk_ready = True
+            logger.info(f"[COMMS] Vosk model found: {len(model_files)} file(s) including {model_files[0].name}")
+        else:
+            logger.warning(f"[COMMS] Vosk model directory empty (no .bin/.mdl files): {VOSK_MODEL_PATH}")
+    else:
+        logger.warning(f"[COMMS] Vosk model directory not found: {VOSK_MODEL_PATH}")
+
+    # Check Piper model
+    if PIPER_MODEL_PATH.exists():
+        onnx_files = list(PIPER_MODEL_PATH.glob("*.onnx"))
+        if onnx_files:
+            piper_ready = True
+            logger.info(f"[COMMS] Piper model found: {onnx_files[0].name}")
+        else:
+            logger.warning(f"[COMMS] Piper model directory empty (no .onnx files): {PIPER_MODEL_PATH}")
+    else:
+        logger.warning(f"[COMMS] Piper model directory not found: {PIPER_MODEL_PATH}")
+
+    if not vosk_ready or not piper_ready:
+        logger.warning("[COMMS] Some models missing. Endpoints will return 503 until models are added.")
+
+
+def init_vosk():
+    """Initialize Vosk model if available."""
+    global vosk_model, vosk_ready
+    if not vosk_ready:
+        return
+    try:
+        vosk_model = Model(str(VOSK_MODEL_PATH))
+        logger.info("[COMMS] Vosk model loaded successfully")
+    except Exception as e:
+        logger.error(f"[COMMS] Failed to load Vosk model: {e}")
+        vosk_ready = False
+
+
+# Run checks at startup
+check_models()
+init_vosk()
+
+# ─────────────────────────────────────────────────────────────
+#  FASTAPI APP SETUP
+# ─────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="N.E.T.R.A. Comms Microservice",
+    description="Speech-to-Text (Vosk) and Text-to-Speech (Piper) API",
+    version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ─────────────────────────────────────────────────────────────
+#  HEALTH CHECK ENDPOINT
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/health")
+def health_check():
+    """Return service health status."""
+    return {
+        "status": "ok",
+        "vosk_ready": vosk_ready,
+        "piper_ready": piper_ready,
+        "vosk_model_path": str(VOSK_MODEL_PATH),
+        "piper_model_path": str(PIPER_MODEL_PATH)
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+#  STT ENDPOINT (Speech-to-Text)
+# ─────────────────────────────────────────────────────────────
+
+@app.post("/stt")
+async def speech_to_text(audio: UploadFile = File(...)):
+    """
+    Convert audio file to text using Vosk.
+    Accepts various formats (webm, opus, mp3, wav) and converts to 16kHz mono WAV.
+    """
+    if not vosk_ready:
+        raise HTTPException(
+            status_code=503,
+            detail="Vosk model not loaded. Please add model files to models/vosk/"
+        )
+
+    temp_files = []
+    try:
+        # Validate file type
+        allowed_extensions = ('.webm', '.opus', '.mp3', '.wav', '.ogg', '.m4a', '.mp4')
+        if not audio.filename.lower().endswith(allowed_extensions):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported audio format. Allowed: {allowed_extensions}"
+            )
+
+        # Read uploaded file
+        audio_bytes = await audio.read()
+        if len(audio_bytes) == 0:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+
+        # Create temp input file
+        input_ext = Path(audio.filename).suffix or '.webm'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=input_ext, dir=TEMP_DIR) as tmp_input:
+            tmp_input.write(audio_bytes)
+            input_path = tmp_input.name
+            temp_files.append(input_path)
+
+        # Convert to 16kHz mono WAV using pydub
+        wav_path = str(Path(input_path).with_suffix('.wav'))
+        temp_files.append(wav_path)
+
+        try:
+            audio_segment = AudioSegment.from_file(input_path)
+            # Convert to mono, 16kHz, 16-bit
+            audio_segment = audio_segment.set_channels(1).set_frame_rate(SAMPLE_RATE).set_sample_width(2)
+            audio_segment.export(wav_path, format="wav")
+        except Exception as e:
+            logger.error(f"[STT] Audio conversion failed: {e}")
+            raise HTTPException(status_code=400, detail=f"Audio conversion failed: {str(e)}")
+
+        # Process with Vosk
+        recognizer = KaldiRecognizer(vosk_model, SAMPLE_RATE)
+        recognizer.SetWords(True)
+
+        with open(wav_path, "rb") as wav_file:
+            while True:
+                data = wav_file.read(4000)
+                if len(data) == 0:
+                    break
+                recognizer.AcceptWaveform(data)
+
+        result = recognizer.FinalResult()
+        import json
+        result_data = json.loads(result)
+
+        text = result_data.get("text", "")
+        confidence = result_data.get("result", [{}])[0].get("conf", 0.0) if result_data.get("result") else 0.0
+
+        logger.info(f"[STT] Transcribed: '{text[:50]}...' (confidence: {confidence:.2f})")
+
+        return JSONResponse(content={
+            "text": text,
+            "confidence": confidence,
+            "success": True
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[STT] Processing error: {e}")
+        raise HTTPException(status_code=500, detail=f"STT processing error: {str(e)}")
+    finally:
+        # Cleanup temp files
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except Exception as e:
+                logger.warning(f"[STT] Failed to cleanup temp file {temp_file}: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+#  TTS ENDPOINT (Text-to-Speech)
+# ─────────────────────────────────────────────────────────────
+
+class TTSRequest:
+    """Pydantic model for TTS request."""
+    def __init__(self, text: str, voice_speed: float = DEFAULT_VOICE_SPEED):
+        self.text = text
+        self.voice_speed = voice_speed
+
+
+@app.post("/tts")
+async def text_to_speech(text: str = Form(...), voice_speed: float = Form(DEFAULT_VOICE_SPEED)):
+    """
+    Convert text to speech using Piper.
+    Returns WAV audio file.
+    """
+    if not piper_ready:
+        raise HTTPException(
+            status_code=503,
+            detail="Piper model not loaded. Please add .onnx model to models/piper/"
+        )
+
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    output_path = None
+    try:
+        # Find the first .onnx file in models/piper
+        onnx_files = list(PIPER_MODEL_PATH.glob("*.onnx"))
+        if not onnx_files:
+            raise HTTPException(status_code=503, detail="No .onnx model found in models/piper/")
+
+        model_file = onnx_files[0]
+
+        # Create output file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav", dir=TEMP_DIR) as tmp_output:
+            output_path = tmp_output.name
+
+        # Build Piper command
+        # Piper outputs raw audio to stdout, we capture it
+        cmd = [
+            PIPER_EXECUTABLE,
+            "--model", str(model_file),
+            "--output_file", output_path,
+            "--sentence-silence", "0.2"
+        ]
+
+        if voice_speed != 1.0:
+            # Note: Piper doesn't natively support speed, but we can document it for future
+            logger.info(f"[TTS] Voice speed {voice_speed} requested (not yet implemented with Piper)")
+
+        logger.info(f"[TTS] Generating speech for: '{text[:50]}...'")
+        logger.info(f"[TTS] Using Piper executable: {PIPER_EXECUTABLE}")
+
+        # Verify Piper executable exists
+        import shutil
+        if not shutil.which(PIPER_EXECUTABLE):
+            logger.error(f"[TTS] Piper executable not found in PATH: {PIPER_EXECUTABLE}")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Piper executable not found: {PIPER_EXECUTABLE}. Please install Piper and add to PATH, or set PIPER_EXECUTABLE environment variable."
+            )
+
+        # Run Piper
+        try:
+            process = subprocess.run(
+                cmd,
+                input=text.encode('utf-8'),
+                capture_output=True,
+                timeout=30  # Prevent hanging
+            )
+        except FileNotFoundError as e:
+            logger.error(f"[TTS] Failed to execute Piper: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Piper executable not found: {PIPER_EXECUTABLE}. Please install Piper and add to PATH."
+            )
+
+        if process.returncode != 0:
+            stderr = process.stderr.decode('utf-8', errors='ignore')
+            logger.error(f"[TTS] Piper failed: {stderr}")
+            raise HTTPException(status_code=500, detail=f"TTS generation failed: {stderr}")
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise HTTPException(status_code=500, detail="TTS generated empty audio file")
+
+        logger.info(f"[TTS] Generated: {output_path}")
+
+        # Return audio file
+        return FileResponse(
+            path=output_path,
+            media_type="audio/wav",
+            filename="tts_output.wav",
+            background=lambda: cleanup_file(output_path)
+        )
+
+    except HTTPException:
+        raise
+    except subprocess.TimeoutExpired:
+        logger.error("[TTS] Piper timeout")
+        raise HTTPException(status_code=504, detail="TTS generation timeout")
+    except Exception as e:
+        logger.error(f"[TTS] Processing error: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS processing error: {str(e)}")
+
+
+def cleanup_file(filepath: str):
+    """Cleanup callback for FileResponse background."""
+    try:
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            logger.info(f"[TTS] Cleaned up: {filepath}")
+    except Exception as e:
+        logger.warning(f"[TTS] Failed to cleanup {filepath}: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+#  STARTUP
+# ─────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+async def startup_event():
+    """Log startup info."""
+    logger.info("=" * 60)
+    logger.info("N.E.T.R.A. Comms Microservice Started")
+    logger.info(f"Vosk ready: {vosk_ready}")
+    logger.info(f"Piper ready: {piper_ready}")
+    logger.info(f"CORS enabled for: http://localhost:3000")
+    logger.info("=" * 60)
+
+
+# ─────────────────────────────────────────────────────────────
+#  MAIN ENTRY POINT
+# ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=3002)
