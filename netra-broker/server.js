@@ -10,7 +10,7 @@
  * logged as a warning and never crashes the broker.
  */
 
-const { Aedes } = require('aedes');
+const aedes = require('aedes')();
 const net = require('net');
 const http = require('http');
 const WebSocket = require('ws');
@@ -25,12 +25,10 @@ const log = (...args) => console.log(`[${ts()}]`, ...args);
 const warn = (...args) => console.warn(`[${ts()}] [WARN]`, ...args);
 const err = (...args) => console.error(`[${ts()}] [ERROR]`, ...args);
 
-let aedes;
 let tcpServer;
 let httpServer;
 
-async function main() {
-  aedes = await Aedes.createBroker();
+function main() {
 
   /* --------------------------- TCP server --------------------------- */
   tcpServer = net.createServer(aedes.handle);
@@ -69,10 +67,12 @@ async function main() {
   attachAedesEvents();
 }
 
-main().catch((e) => {
+try {
+  main();
+} catch (e) {
   err('Failed to start broker:', e && e.stack ? e.stack : e);
   process.exit(1);
-});
+}
 
 function attachAedesEvents() {
 

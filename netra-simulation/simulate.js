@@ -236,6 +236,15 @@ client.on('connect', () => {
       console.log('[NETRA] ✓ Subscribed to tactical/commands');
     }
   });
+  
+  // Subscribe to Pi's AI responses to log them
+  client.subscribe('battlefield/ai-response', { qos: 1 }, (err) => {
+    if (err) {
+      console.error('[NETRA] Failed to subscribe to Pi responses:', err.message);
+    } else {
+      console.log('[NETRA] ✓ Subscribed to Pi AI responses (battlefield/ai-response)');
+    }
+  });
 
   // Guard against duplicate intervals on reconnect
   if (!simulationInterval) {
@@ -260,6 +269,27 @@ client.on('offline', () => {
 
 client.on('error', (err) => {
   console.error('[NETRA] MQTT Error:', err.message);
+});
+
+// Listen for Pi's AI responses
+client.on('message', (topic, message) => {
+  if (topic === 'battlefield/ai-response') {
+    try {
+      const response = JSON.parse(message.toString());
+      console.log('\n[📥 RECEIVED FROM PI] battlefield/ai-response');
+      console.log('  Decision:', response.decision);
+      console.log('  Risk Score:', response.context?.risk_score);
+      console.log('  Threat Level:', response.context?.threat_level);
+      console.log('  Latency:', response.context?.latency_ms + 'ms');
+      if (response.context?.replying_to_unit) {
+        console.log('  Replying to:', response.context.replying_to_unit);
+        console.log('  Original msg:', response.context.replying_to_message);
+      }
+      console.log('[📥] Response received from Raspberry Pi\n');
+    } catch (e) {
+      console.log('[📥 RECEIVED FROM PI] Raw:', message.toString());
+    }
+  }
 });
 
 client.on('close', () => {
@@ -340,11 +370,20 @@ function simulationTick() {
   // 3. Publish — QoS 0 (fire-and-forget) is correct for telemetry
   // Note: Pi expects 'battlefield/sensor' per netra-raspberry/NETRA.ai/edge_ai/config.py
   if (client.connected) {
+    const payloadStr = JSON.stringify(payload);
     client.publish(
       'battlefield/sensor',
-      JSON.stringify(payload),
+      payloadStr,
       { qos: 0 }
     );
+    
+    // Log what we're sending to the Pi
+    console.log('\n[📤 SENDING TO PI] battlefield/sensor');
+    console.log(JSON.stringify(payload, null, 2));
+    if (pendingVoiceMessage) {
+      console.log(`[🎤 VOICE INCLUDED] From ${pendingVoiceMessage.unit}: "${pendingVoiceMessage.message}"`);
+    }
+    console.log('[📤] Payload sent to Raspberry Pi\n');
   }
 
   // 4. Console summary
