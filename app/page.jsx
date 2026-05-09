@@ -11,7 +11,6 @@ import { useTacticalStore } from "@/lib/store";
 export default function CommandCenter() {
   const soldiers = useTacticalStore((s) => s.soldiers);
   const logs = useTacticalStore((s) => s.logs);
-  const brokerStatus = useTacticalStore((s) => s.brokerStatus);
   const hasLiveTelemetry = useTacticalStore((s) => s.hasLiveTelemetry);
   const setSoldiers = useTacticalStore((s) => s.setSoldiers);
   const patchSoldier = useTacticalStore((s) => s.patchSoldier);
@@ -240,18 +239,6 @@ export default function CommandCenter() {
         <div className="flex items-center gap-4">
           <span>LAT: 38.9072° N</span>
           <span>LON: 77.0369° W</span>
-          <span>|</span>
-          <span
-            className={
-              brokerStatus === "connected"
-                ? "text-success"
-                : brokerStatus === "connecting"
-                  ? "text-accent"
-                  : "text-destructive"
-            }
-          >
-            ■ BROKER: {String(brokerStatus).toUpperCase()}
-          </span>
         </div>
       </footer>
     </div>

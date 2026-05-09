@@ -1,9 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { useTacticalStore } from "@/lib/store";
 
 // Sends a patch_soldier command to the simulation server via HTTP.
 // The sim applies the patch and immediately publishes a fresh telemetry payload.
+// Returns the updated soldier data if successful.
 async function sendPatch(targetId, patch) {
   try {
     const response = await fetch('http://localhost:3001/command', {
@@ -19,19 +21,22 @@ async function sendPatch(targetId, patch) {
 
     if (!response.ok) {
       console.warn('[GodMode] HTTP command failed:', response.status);
-      return false;
+      return null;
     }
 
-    return true;
+    const data = await response.json();
+    return data.soldier || null;
   } catch (err) {
     console.warn('[GodMode] Failed to send command:', err.message);
-    return false;
+    return null;
   }
 }
 
 export function SimulationPanel({ soldiers, onTriggerEvent }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [selectedTarget, setSelectedTarget] = useState("");
+  const patchSoldier = useTacticalStore((s) => s.patchSoldier);
+  const addLog = useTacticalStore((s) => s.addLog);
 
   const eventTypes = [
     {
@@ -103,8 +108,29 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
         return;
     }
 
-    const sent = await sendPatch(selectedTarget, patch);
-    if (!sent) {
+    const updatedSoldier = await sendPatch(selectedTarget, patch);
+    if (updatedSoldier) {
+      // HTTP succeeded — update local state with server response
+      patchSoldier(selectedTarget, updatedSoldier);
+      // Add log entry for the event
+      const eventLabels = {
+        heartRateSpike: { type: "alert", msg: `CRITICAL: ${updatedSoldier.callsign} experiencing severe tachycardia.` },
+        heartRateDrop: { type: "warning", msg: `${updatedSoldier.callsign} heart rate dropping. Possible medical event.` },
+        batteryDrain: { type: "warning", msg: `${updatedSoldier.callsign} experiencing rapid power drain.` },
+        connectionLost: { type: "alert", msg: `CONNECTION LOST: ${updatedSoldier.callsign} no longer transmitting.` },
+        connectionRestored: { type: "directive", msg: `Connection restored with ${updatedSoldier.callsign}.` },
+        casualty: { type: "alert", msg: `CASUALTY ALERT: ${updatedSoldier.callsign} vitals critical.` },
+      };
+      const logInfo = eventLabels[eventType];
+      if (logInfo) {
+        addLog({
+          type: logInfo.type,
+          source: "NETRA-GODMODE",
+          message: logInfo.msg,
+          data: { heartRate: updatedSoldier.heartRate, status: updatedSoldier.status },
+        });
+      }
+    } else {
       // HTTP failed — fall back to local god-mode so the UI still responds
       onTriggerEvent({ type: eventType, targetId: selectedTarget, timestamp: new Date().toISOString() });
     }
@@ -201,12 +227,14 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
               <button
                 onClick={async () => {
                   for (const s of soldiers) {
-                    const sent = await sendPatch(s.id, {
+                    const updatedSoldier = await sendPatch(s.id, {
                       status: "nominal",
                       heartRate: 75 + Math.floor(Math.random() * 10),
                       battery: 80 + Math.floor(Math.random() * 15),
                     });
-                    if (!sent) {
+                    if (updatedSoldier) {
+                      patchSoldier(s.id, updatedSoldier);
+                    } else {
                       onTriggerEvent({ type: "connectionRestored", targetId: s.id, timestamp: new Date().toISOString() });
                     }
                   }
