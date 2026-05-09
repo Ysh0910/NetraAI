@@ -18,6 +18,7 @@
   "homepage": "https://github.com/Ysh0910/NetraAI#readme",
   "description": "",
   "dependencies": {
-    "mqtt": "5.15.1"
+    "mqtt": "5.15.1",
+    "express": "^4.18.2"
   }
 }

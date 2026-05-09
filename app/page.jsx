@@ -7,12 +7,8 @@ import { TelemetryPanel } from "@/components/telemetry-panel";
 import { AgentLog } from "@/components/agent-log";
 import { SimulationPanel } from "@/components/simulation-panel";
 import { useTacticalStore } from "@/lib/store";
-import { useMqttIntegration } from "@/hooks/use-mqtt-integration";
 
 export default function CommandCenter() {
-  // ── Live MQTT pipeline ──────────────────────────────────────────────
-  useMqttIntegration();
-
   const soldiers = useTacticalStore((s) => s.soldiers);
   const logs = useTacticalStore((s) => s.logs);
   const brokerStatus = useTacticalStore((s) => s.brokerStatus);

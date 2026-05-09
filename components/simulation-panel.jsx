@@ -1,17 +1,32 @@
 "use client";
 
 import { useState } from "react";
-import { publishMessage } from "@/hooks/use-mqtt-integration";
 
-// Sends a patch_soldier command to the simulation server via MQTT.
+// Sends a patch_soldier command to the simulation server via HTTP.
 // The sim applies the patch and immediately publishes a fresh telemetry payload.
-function sendPatch(targetId, patch) {
-  return publishMessage("tactical/commands", {
-    command:   "patch_soldier",
-    targetId,
-    patch,
-    timestamp: Date.now(),
-  });
+async function sendPatch(targetId, patch) {
+  try {
+    const response = await fetch('http://localhost:3001/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command: 'patch_soldier',
+        targetId,
+        patch,
+        timestamp: Date.now(),
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn('[GodMode] HTTP command failed:', response.status);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.warn('[GodMode] Failed to send command:', err.message);
+    return false;
+  }
 }
 
 export function SimulationPanel({ soldiers, onTriggerEvent }) {
@@ -57,7 +72,7 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
     },
   ];
 
-  const handleTrigger = (eventType) => {
+  const handleTrigger = async (eventType) => {
     if (!selectedTarget) return;
 
     const target = soldiers.find((s) => s.id === selectedTarget);
@@ -88,9 +103,9 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
         return;
     }
 
-    const sent = sendPatch(selectedTarget, patch);
+    const sent = await sendPatch(selectedTarget, patch);
     if (!sent) {
-      // Broker not connected — fall back to local god-mode so the UI still responds
+      // HTTP failed — fall back to local god-mode so the UI still responds
       onTriggerEvent({ type: eventType, targetId: selectedTarget, timestamp: new Date().toISOString() });
     }
   };
@@ -184,9 +199,9 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
             </label>
             <div className="flex gap-2">
               <button
-                onClick={() => {
-                  soldiers.forEach((s) => {
-                    const sent = sendPatch(s.id, {
+                onClick={async () => {
+                  for (const s of soldiers) {
+                    const sent = await sendPatch(s.id, {
                       status: "nominal",
                       heartRate: 75 + Math.floor(Math.random() * 10),
                       battery: 80 + Math.floor(Math.random() * 15),
@@ -194,7 +209,7 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
                     if (!sent) {
                       onTriggerEvent({ type: "connectionRestored", targetId: s.id, timestamp: new Date().toISOString() });
                     }
-                  });
+                  }
                 }}
                 className="flex-1 px-2 py-1.5 rounded border border-success/50 text-success text-[10px] uppercase tracking-wide hover:bg-success/10 transition-colors"
               >

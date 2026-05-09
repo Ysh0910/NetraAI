@@ -2,6 +2,7 @@
 'use strict';
 
 const mqtt = require('mqtt');
+const express = require('express');
 
 // ─────────────────────────────────────────────────────────────
 //  SECTION 1 — MAP BOUNDS & TACTICAL GRID
@@ -243,6 +244,9 @@ client.on('connect', () => {
     // Fire one tick immediately so the dashboard gets data right away
     simulationTick();
   }
+
+  // ── HTTP SERVER for frontend dashboard commands ─────────────────────
+  startHttpServer();
 });
 
 client.on('reconnect', () => {
@@ -329,9 +333,10 @@ function simulationTick() {
   };
 
   // 3. Publish — QoS 0 (fire-and-forget) is correct for telemetry
+  // Note: Pi expects 'battlefield/sensor' per netra-raspberry/NETRA.ai/edge_ai/config.py
   if (client.connected) {
     client.publish(
-      'tactical/squad/telemetry',
+      'battlefield/sensor',
       JSON.stringify(payload),
       { qos: 0 }
     );
@@ -351,7 +356,63 @@ function simulationTick() {
 simulationTick._count = 0;
 
 // ─────────────────────────────────────────────────────────────
-//  SECTION 9 — GRACEFUL SHUTDOWN
+//  SECTION 9 — HTTP SERVER (Dashboard → Simulation Commands)
+// ─────────────────────────────────────────────────────────────
+
+let httpServer = null;
+
+function startHttpServer() {
+  if (httpServer) return; // Already running
+
+  const app = express();
+  app.use(express.json());
+
+  // CORS for browser requests
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
+  // Health check endpoint
+  app.get('/health', (req, res) => {
+    res.json({ status: 'ok', broker: client.connected ? 'connected' : 'disconnected' });
+  });
+
+  // HTTP endpoint for patch commands from frontend
+  app.post('/command', (req, res) => {
+    const { command, targetId, patch } = req.body;
+
+    if (command !== 'patch_soldier') {
+      return res.status(400).json({ error: 'Unknown command', valid: ['patch_soldier'] });
+    }
+
+    const id = String(targetId || '').toLowerCase();
+    const soldier = squad[id];
+
+    if (!soldier) {
+      return res.status(404).json({ error: 'Soldier not found', valid: Object.keys(squad) });
+    }
+
+    soldier.applyPatch(patch || {});
+
+    // Publish an immediate tick so the dashboard reflects the change right away
+    simulationTick();
+
+    res.json({ success: true, soldier: soldier.toJSON() });
+  });
+
+  httpServer = app.listen(3001, () => {
+    console.log('[NETRA] ✓ HTTP command server on port 3001');
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SECTION 10 — GRACEFUL SHUTDOWN
 // ─────────────────────────────────────────────────────────────
 
 // Ctrl+C → stop loop → publish SHUTDOWN → clean disconnect
