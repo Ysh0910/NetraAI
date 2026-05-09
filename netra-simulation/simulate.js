@@ -309,6 +309,9 @@ client.on('message', (topic, messageBuffer) => {
 //  SECTION 8 — THE SIMULATION TICK (30s GAME LOOP)
 // ─────────────────────────────────────────────────────────────
 
+// Global voice message buffer - set by HTTP endpoint, cleared after publish
+let pendingVoiceMessage = null;
+
 function simulationTick() {
   // 1. Advance all soldiers
   for (const soldier of Object.values(squad)) {
@@ -330,6 +333,8 @@ function simulationTick() {
       lat:      HOSTAGE.lat,
       lng:      HOSTAGE.lng,
     },
+    // Include voice message if present (from dashboard STT)
+    voiceMessage: pendingVoiceMessage,
   };
 
   // 3. Publish — QoS 0 (fire-and-forget) is correct for telemetry
@@ -404,6 +409,33 @@ function startHttpServer() {
     simulationTick();
 
     res.json({ success: true, soldier: soldier.toJSON() });
+  });
+
+  // HTTP endpoint for voice commands from frontend (STT → Pi)
+  app.post('/voice', (req, res) => {
+    const { unit, message, timestamp } = req.body;
+
+    if (!unit || !message) {
+      return res.status(400).json({ error: 'Missing unit or message' });
+    }
+
+    // Store voice message for next telemetry publish
+    pendingVoiceMessage = {
+      unit: unit,
+      message: message,
+      timestamp: timestamp || Date.now(),
+      source: 'dashboard',
+    };
+
+    console.log(`[VOICE] Command from ${unit}: "${message}"`);
+
+    // Publish immediately with voice message
+    simulationTick();
+
+    // Clear after publish
+    pendingVoiceMessage = null;
+
+    res.json({ success: true, queued: true });
   });
 
   httpServer = app.listen(3001, () => {

@@ -6,6 +6,7 @@ import { TacticalMap } from "@/components/tactical-map";
 import { TelemetryPanel } from "@/components/telemetry-panel";
 import { AgentLog } from "@/components/agent-log";
 import { SimulationPanel } from "@/components/simulation-panel";
+import { VoiceCommandPanel } from "@/components/voice-command";
 import { useTacticalStore } from "@/lib/store";
 
 export default function CommandCenter() {
@@ -17,6 +18,7 @@ export default function CommandCenter() {
   const addLog = useTacticalStore((s) => s.addLog);
 
   const [selectedSoldier, setSelectedSoldier] = useState(null);
+  const [voiceUnit, setVoiceUnit] = useState("ALPHA-1");
 
   // ── Local-only fluctuation simulator ────────────────────────────────
   // Runs only when no live telemetry is flowing, so the dashboard never
@@ -221,6 +223,11 @@ export default function CommandCenter() {
           <div className="flex-1 min-h-0">
             <AgentLog logs={logs} />
           </div>
+          <VoiceCommandPanel
+            soldiers={soldiers}
+            selectedUnit={voiceUnit}
+            onUnitChange={setVoiceUnit}
+          />
           <SimulationPanel
             soldiers={soldiers}
             onTriggerEvent={handleSimulationEvent}

@@ -1,0 +1,7 @@
+# Ignore all temporary audio files
+*.wav
+*.webm
+*.opus
+*.mp3
+*.ogg
+*.m4a
