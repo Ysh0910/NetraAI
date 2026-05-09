@@ -11,11 +11,18 @@ import { NextResponse } from "next/server";
 const aiResponseStore = {
   lastResponse: null,
   listeners: [],
+  responseCount: 0,
   
   setResponse(response) {
-    this.lastResponse = response;
+    this.responseCount++;
+    this.lastResponse = {
+      ...response,
+      _storeId: this.responseCount, // Unique ID for debugging
+      _storedAt: Date.now()
+    };
+    console.log('[STORE] Response stored:', this.responseCount, response.decision?.substring(0, 30));
     // Notify all listeners (Server-Sent Events)
-    this.listeners.forEach(listener => listener(response));
+    this.listeners.forEach(listener => listener(this.lastResponse));
   },
   
   addListener(listener) {
@@ -74,8 +81,10 @@ export async function POST(request) {
 }
 
 // GET endpoint for polling (optional fallback)
-export async function GET() {
+export async function GET(request) {
   const lastResponse = aiResponseStore.getLastResponse();
+  
+  console.log('[API GET] Poll request, has response:', !!lastResponse, 'id:', lastResponse?._storeId);
   
   if (!lastResponse) {
     return NextResponse.json(
@@ -84,10 +93,15 @@ export async function GET() {
     );
   }
   
+  // Force no caching
+  const headers = new Headers();
+  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  headers.set('Pragma', 'no-cache');
+  
   return NextResponse.json({
     success: true,
     response: lastResponse
-  });
+  }, { headers });
 }
 
 // Export for use by other server components

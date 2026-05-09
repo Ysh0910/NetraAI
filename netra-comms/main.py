@@ -383,18 +383,192 @@ async def get_audio_file(filename: str):
 
 
 # ─────────────────────────────────────────────────────────────
+#  MQTT SUBSCRIBER FOR PI AI RESPONSES
+# ─────────────────────────────────────────────────────────────
+
+import threading
+import json
+import urllib.request
+import paho.mqtt.client as mqtt
+
+MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_TOPIC_AI_RESPONSE = "battlefield/ai-response"
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:3000")
+
+mqtt_client = None
+mqtt_connected = False
+
+
+def generate_tts_for_ai_response(text: str) -> Optional[str]:
+    """Generate TTS audio for AI response and return URL."""
+    global piper_ready, PIPER_MODEL_PATH, PIPER_EXECUTABLE, AUDIO_OUTPUT_DIR
+    
+    if not piper_ready:
+        logger.error("[MQTT] Piper not ready, cannot generate TTS")
+        return None
+    
+    try:
+        # Find the first .onnx file
+        onnx_files = list(PIPER_MODEL_PATH.glob("*.onnx"))
+        if not onnx_files:
+            logger.error("[MQTT] No .onnx model found")
+            return None
+        
+        model_file = onnx_files[0]
+        
+        # Generate unique filename
+        import uuid
+        audio_id = str(uuid.uuid4())[:8]
+        output_filename = f"ai_response_{audio_id}.wav"
+        output_path = AUDIO_OUTPUT_DIR / output_filename
+        
+        # Build Piper command
+        cmd = [
+            PIPER_EXECUTABLE,
+            "--model", str(model_file),
+            "--output_file", str(output_path),
+            "--sentence-silence", "0.2"
+        ]
+        
+        logger.info(f"[MQTT] Generating TTS for AI response: '{text[:50]}...'")
+        
+        # Run Piper
+        process = subprocess.run(
+            cmd,
+            input=text.encode('utf-8'),
+            capture_output=True,
+            timeout=30
+        )
+        
+        if process.returncode != 0:
+            stderr = process.stderr.decode('utf-8', errors='ignore')
+            logger.error(f"[MQTT] TTS generation failed: {stderr}")
+            return None
+        
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            logger.error("[MQTT] TTS generated empty file")
+            return None
+        
+        # Return the audio URL
+        audio_url = f"http://localhost:3002/audio/{output_filename}"
+        logger.info(f"[MQTT] TTS generated: {audio_url}")
+        return audio_url
+        
+    except Exception as e:
+        logger.error(f"[MQTT] TTS generation error: {e}")
+        return None
+
+
+def forward_to_dashboard(decision: str, audio_url: str, context: dict):
+    """Forward AI response to dashboard via HTTP POST."""
+    try:
+        payload = {
+            "decision": decision,
+            "audio_url": audio_url,
+            "context": context
+        }
+        
+        url = f"{DASHBOARD_URL}/api/ai-response"
+        data = json.dumps(payload).encode('utf-8')
+        
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.status == 200:
+                logger.info(f"[MQTT] Forwarded AI response to dashboard: {decision[:50]}...")
+            else:
+                logger.warning(f"[MQTT] Dashboard returned status {response.status}")
+                
+    except Exception as e:
+        logger.error(f"[MQTT] Failed to forward to dashboard: {e}")
+
+
+def on_mqtt_message(client, userdata, msg):
+    """Handle incoming AI response from Raspberry Pi."""
+    try:
+        payload = json.loads(msg.payload.decode('utf-8'))
+        logger.info(f"[MQTT] Received AI response from Pi: {payload.get('decision', 'N/A')[:50]}...")
+        
+        # Extract the decision text
+        decision = payload.get('decision', '')
+        context = payload.get('context', {})
+        
+        if not decision:
+            logger.warning("[MQTT] Empty decision in AI response")
+            return
+        
+        # Generate TTS for the decision
+        audio_url = generate_tts_for_ai_response(decision)
+        
+        # Forward to dashboard (even if TTS failed, we still send the text)
+        forward_to_dashboard(decision, audio_url or "", context)
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"[MQTT] Invalid JSON in message: {e}")
+    except Exception as e:
+        logger.error(f"[MQTT] Error processing message: {e}")
+
+
+def on_mqtt_connect(client, userdata, flags, rc):
+    """Callback when connected to MQTT broker."""
+    global mqtt_connected
+    if rc == 0:
+        mqtt_connected = True
+        logger.info(f"[MQTT] Connected to broker at {MQTT_BROKER}:{MQTT_PORT}")
+        client.subscribe(MQTT_TOPIC_AI_RESPONSE)
+        logger.info(f"[MQTT] Subscribed to {MQTT_TOPIC_AI_RESPONSE}")
+    else:
+        logger.error(f"[MQTT] Connection failed with code {rc}")
+
+
+def on_mqtt_disconnect(client, userdata, rc):
+    """Callback when disconnected from broker."""
+    global mqtt_connected
+    mqtt_connected = False
+    logger.warning(f"[MQTT] Disconnected from broker (rc={rc})")
+
+
+def start_mqtt_subscriber():
+    """Start MQTT subscriber in background thread."""
+    global mqtt_client
+    
+    try:
+        mqtt_client = mqtt.Client()
+        mqtt_client.on_connect = on_mqtt_connect
+        mqtt_client.on_disconnect = on_mqtt_disconnect
+        mqtt_client.on_message = on_mqtt_message
+        
+        logger.info(f"[MQTT] Connecting to broker at {MQTT_BROKER}:{MQTT_PORT}...")
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+        mqtt_client.loop_start()
+        
+    except Exception as e:
+        logger.error(f"[MQTT] Failed to start subscriber: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
 #  STARTUP
 # ─────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
 async def startup_event():
-    """Log startup info."""
+    """Log startup info and start MQTT subscriber."""
     logger.info("=" * 60)
     logger.info("N.E.T.R.A. Comms Microservice Started")
     logger.info(f"Vosk ready: {vosk_ready}")
     logger.info(f"Piper ready: {piper_ready}")
     logger.info(f"CORS enabled for: http://localhost:3000")
     logger.info("=" * 60)
+    
+    # Start MQTT subscriber in background thread
+    mqtt_thread = threading.Thread(target=start_mqtt_subscriber, daemon=True)
+    mqtt_thread.start()
 
 
 # ─────────────────────────────────────────────────────────────

@@ -29,11 +29,18 @@ export function useMqttIntegration({
   const setBrokerStatus = useTacticalStore((s) => s.setBrokerStatus);
   const updateTacticalData = useTacticalStore((s) => s.updateTacticalData);
   const addLog = useTacticalStore((s) => s.addLog);
+  const setLastAiAudio = useTacticalStore((s) => s.setLastAiAudio);
 
-  // Keep a stable ref to topics so the effect doesn't re-run when the
-  // caller passes an inline array literal on every render.
+  // Keep stable refs so the effect doesn't re-run
   const topicsRef = useRef(topics);
   topicsRef.current = topics;
+  
+  // Use ref for setLastAiAudio to prevent effect re-runs
+  const setLastAiAudioRef = useRef(setLastAiAudio);
+  setLastAiAudioRef.current = setLastAiAudio;
+  
+  // Track last processed timestamp in ref (persists across re-renders)
+  const lastProcessedTimestampRef = useRef(0);
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -163,11 +170,52 @@ export function useMqttIntegration({
       return true;
     };
 
+    // Poll for AI responses from netra-comms via HTTP
+    const pollForAiResponse = async () => {
+      try {
+        const res = await fetch('/api/ai-response', { cache: 'no-store' });
+        console.log('[NETRA-AUDIO] Poll status:', res.status);
+        if (res.ok) {
+          const data = await res.json();
+          console.log('[NETRA-AUDIO] Poll data:', data);
+          if (data.success && data.response) {
+            const response = data.response;
+            const responseTime = response.timestamp || response.receivedAt || 0;
+            console.log('[NETRA-AUDIO] Checking response time:', responseTime, 'vs last:', lastProcessedTimestampRef.current);
+            
+            // Only process if it's a new response
+            if (responseTime > lastProcessedTimestampRef.current) {
+              lastProcessedTimestampRef.current = responseTime;
+              console.log('[NETRA-AUDIO] NEW RESPONSE - updating store');
+              setLastAiAudioRef.current({
+                audioUrl: response.audioUrl,
+                decision: response.decision,
+                timestamp: responseTime,
+              });
+            } else {
+              console.log('[NETRA-AUDIO] Same/old response, skipping');
+            }
+          } else {
+            console.log('[NETRA-AUDIO] No response in data');
+          }
+        } else if (res.status === 404) {
+          console.log('[NETRA-AUDIO] No response stored yet (404)');
+        }
+      } catch (err) {
+        console.log('[NETRA-AUDIO] Poll error:', err?.message);
+      }
+    };
+
+    // Poll every 2 seconds
+    const pollInterval = setInterval(pollForAiResponse, 2000);
+    pollForAiResponse();
+
     return () => {
       destroyed = true;
+      clearInterval(pollInterval);
       if (client) {
         console.log("[NETRA-MQTT] disconnecting...");
-        client.end(false); // graceful close — avoids triggering reconnect loop
+        client.end(false);
       }
       window.__netraMqttPublish = null;
     };

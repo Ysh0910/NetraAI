@@ -7,9 +7,14 @@ import { TelemetryPanel } from "@/components/telemetry-panel";
 import { AgentLog } from "@/components/agent-log";
 import { SimulationPanel } from "@/components/simulation-panel";
 import { VoiceCommandPanel } from "@/components/voice-command";
+import { AIResponsePlayer } from "@/components/ai-response-player";
 import { useTacticalStore } from "@/lib/store";
+import { useMqttIntegration } from "@/hooks/use-mqtt-integration";
 
 export default function CommandCenter() {
+  // Start MQTT integration (includes AI response polling)
+  useMqttIntegration();
+
   const soldiers = useTacticalStore((s) => s.soldiers);
   const logs = useTacticalStore((s) => s.logs);
   const hasLiveTelemetry = useTacticalStore((s) => s.hasLiveTelemetry);
@@ -223,6 +228,7 @@ export default function CommandCenter() {
           <div className="flex-1 min-h-0">
             <AgentLog logs={logs} />
           </div>
+          <AIResponsePlayer />
           <VoiceCommandPanel
             soldiers={soldiers}
             selectedUnit={voiceUnit}

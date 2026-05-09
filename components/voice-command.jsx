@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { Mic, Square, Send, Volume2, Loader2 } from "lucide-react";
+import { Mic, Square, Send, Volume2, Loader2, Play } from "lucide-react";
+import { useTacticalStore } from "@/lib/store";
 
 export function VoiceCommandPanel({ soldiers, selectedUnit, onUnitChange }) {
   const [isRecording, setIsRecording] = useState(false);
@@ -9,6 +10,9 @@ export function VoiceCommandPanel({ soldiers, selectedUnit, onUnitChange }) {
   const [transcript, setTranscript] = useState("");
   const [audioUrl, setAudioUrl] = useState(null);
   const [status, setStatus] = useState("");
+  
+  // Get last AI response from store
+  const lastAiAudio = useTacticalStore((s) => s.lastAiAudio);
   
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -203,15 +207,29 @@ export function VoiceCommandPanel({ soldiers, selectedUnit, onUnitChange }) {
       {/* Hidden Audio Player */}
       <audio ref={audioPlayerRef} className="hidden" />
 
-      {/* Test TTS Button */}
+      {/* Play Last AI Response */}
       <div className="pt-2 border-t border-border">
         <button
-          onClick={() => playResponse("Take cover. Enemy approaching from the east.")}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs bg-secondary hover:bg-secondary/90 rounded transition-colors"
+          onClick={() => {
+            if (lastAiAudio?.url && audioPlayerRef.current) {
+              audioPlayerRef.current.src = lastAiAudio.url;
+              audioPlayerRef.current.play();
+              setStatus(`Playing: ${lastAiAudio.text?.substring(0, 30)}...`);
+            } else {
+              setStatus("No AI response yet");
+            }
+          }}
+          disabled={!lastAiAudio}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs bg-secondary hover:bg-secondary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded transition-colors"
         >
-          <Volume2 className="w-4 h-4" />
-          Test Audio Response
+          <Play className="w-4 h-4" />
+          {lastAiAudio ? "Play AI Response" : "No AI Response Yet"}
         </button>
+        {lastAiAudio && (
+          <p className="text-[10px] text-muted-foreground mt-1 truncate">
+            {lastAiAudio.text?.substring(0, 50)}...
+          </p>
+        )}
       </div>
     </div>
   );
