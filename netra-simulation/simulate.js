@@ -92,85 +92,102 @@ function distanceMeters(lat1, lng1, lat2, lng2) {
 //  SECTION 3 — SOLDIER CLASS (DIGITAL TWIN ENTITY)
 // ─────────────────────────────────────────────────────────────
 
+// Maps soldier id → display callsign
+const CALLSIGNS = {
+  alpha:   'ALPHA-1',
+  charlie: 'CHARLIE-3',
+};
+
 class Soldier {
   constructor(id, lat, lng) {
-    this.id        = id;
+    this.id        = id.toLowerCase();
     this.lat       = lat;
     this.lng       = lng;
     this.heartRate = 72 + Math.floor(Math.random() * 10); // 72–82 bpm baseline
     this.battery   = 95 + Math.floor(Math.random() * 6);  // 95–100%
-    this.trustScore = 1.0;
-
-    // Sensor drift state — activated by jam_sensor command
-    this._jammed   = false;
-    this._driftLat = 0;
-    this._driftLng = 0;
 
     // Casualty flag — freezes all updates when true
     this._casualty = false;
+
+    // God-mode override patch — applied on top of tick values
+    // Set by patch_soldier command, cleared on connectionRestored
+    this._patch = null;
   }
 
-  // Called once per second — advances HR, battery, and drift (position is now static or controlled by frontend drag)
+  // Called every 30s — advances HR and battery
   tick() {
     if (this._casualty) return;
-
-    // Position is no longer randomly updated - soldiers stay static or are moved by frontend drag commands
-    // Previous random walk removed per user request
 
     // Heart rate fluctuation ±2 bpm, clamped to physiological range
     this.heartRate += Math.round(gaussianNoise(2));
     this.heartRate = clamp(this.heartRate, 55, 130);
 
-    // Battery drains ~0.01% per second → full drain in ~2.7 hours
-    this.battery = Math.max(0, parseFloat((this.battery - 0.01).toFixed(2)));
-
-    // Accumulate GPS drift if sensor is jammed (≈3m/s drift)
-    if (this._jammed) {
-      this._driftLat += gaussianNoise(0.00003);
-      this._driftLng += gaussianNoise(0.00003);
-    }
+    // Battery drains ~0.3% per 30s tick → full drain in ~8.3 hours
+    this.battery = Math.max(0, parseFloat((this.battery - 0.3).toFixed(2)));
   }
 
-  // Returns the serializable state — reported GPS includes drift if jammed
+  // Apply a god-mode patch from the dashboard immediately
+  applyPatch(patch) {
+    if (typeof patch.heartRate === 'number') this.heartRate = patch.heartRate;
+    if (typeof patch.battery   === 'number') this.battery   = patch.battery;
+    if (patch.status === 'offline') {
+      this._casualty = true;
+      this.heartRate = 0;
+    }
+    if (patch.status === 'nominal') {
+      // connectionRestored — reset casualty flag and restore values
+      this._casualty = false;
+      if (typeof patch.heartRate === 'number') this.heartRate = patch.heartRate;
+      if (typeof patch.battery   === 'number') this.battery   = patch.battery;
+    }
+    console.log(`[CMD] patch applied to ${this.id}:`, patch);
+  }
+
+  // Derive UI status from internal state
+  _uiStatus() {
+    if (this._casualty)              return 'critical';
+    if (this.heartRate > 120)        return 'critical';
+    if (this.heartRate > 100)        return 'warning';
+    if (this.battery < 20)           return 'warning';
+    return 'nominal';
+  }
+
+  // Returns the serializable state
   toJSON() {
     return {
-      id:         this.id,
-      lat:        parseFloat((this.lat + this._driftLat).toFixed(6)),
-      lng:        parseFloat((this.lng + this._driftLng).toFixed(6)),
-      heartRate:  this._casualty ? 0 : this.heartRate,
-      battery:    this.battery,
-      trustScore: parseFloat(this.trustScore.toFixed(2)),
-      status:     this._casualty ? 'CASUALTY' : this._jammed ? 'SENSOR_JAMMED' : 'ACTIVE',
+      id:        this.id,
+      callsign:  CALLSIGNS[this.id] || this.id.toUpperCase(),
+      lat:       parseFloat(this.lat.toFixed(6)),
+      lng:       parseFloat(this.lng.toFixed(6)),
+      heartRate: this._casualty ? 0 : this.heartRate,
+      battery:   this.battery,
+      status:    this._uiStatus(),
     };
-  }
-
-  // ── Command Handlers ──────────────────────────────────────
-
-  cmdCasualty() {
-    console.log(`[CMD] ${this.id} marked as CASUALTY.`);
-    this._casualty = true;
-    this.heartRate = 0;
-    this.trustScore = 0.0;
-  }
-
-  // Sensor jam: GPS starts drifting slowly, trust score drops
-  cmdJamSensor() {
-    console.log(`[CMD] ${this.id} sensor JAMMED. Initiating drift.`);
-    this._jammed = true;
-    this.trustScore = 0.2;
   }
 }
 
 // ─────────────────────────────────────────────────────────────
-//  SECTION 4 — SQUAD INITIALIZATION
+//  SECTION 4 — SQUAD & STATIC MARKERS INITIALIZATION
 // ─────────────────────────────────────────────────────────────
 
-// All four soldiers spawn inside MAP_BOUNDS in walkable (0) cells
+// Two soldiers — alpha and charlie
 const squad = {
-  Alpha:   new Soldier('Alpha',   12.9795, 77.5925),
-  Bravo:   new Soldier('Bravo',   12.9796, 77.5924),
-  Charlie: new Soldier('Charlie', 12.9794, 77.5926),
-  Delta:   new Soldier('Delta',   12.9795, 77.5923),
+  alpha:   new Soldier('alpha',   12.9795, 77.5925),
+  charlie: new Soldier('charlie', 12.9794, 77.5926),
+};
+
+// Static markers — no movement logic, positions are fixed
+// These are returned in every payload so the frontend always knows where they are
+const ENEMY = {
+  callsign: 'HOSTILE',
+  lat: 12.9797,
+  lng: 77.5930,
+};
+
+const HOSTAGE = {
+  callsign: 'HOSTAGE',
+  lat: 12.9793,
+  lng: 77.5920,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -221,8 +238,10 @@ client.on('connect', () => {
 
   // Guard against duplicate intervals on reconnect
   if (!simulationInterval) {
-    simulationInterval = setInterval(simulationTick, 1000);
-    console.log('[NETRA] ✓ Simulation loop started at 1 Hz');
+    simulationInterval = setInterval(simulationTick, 30000);
+    console.log('[NETRA] ✓ Simulation loop started at 0.033 Hz (30s interval)');
+    // Fire one tick immediately so the dashboard gets data right away
+    simulationTick();
   }
 });
 
@@ -248,8 +267,7 @@ client.on('close', () => {
 // ─────────────────────────────────────────────────────────────
 
 // Expected command format on topic 'tactical/commands':
-//   { "command": "casualty",   "target": "Charlie" }
-//   { "command": "jam_sensor", "target": "Bravo" }
+//   { "command": "patch_soldier", "targetId": "alpha", "patch": { "heartRate": 140, "status": "critical" }, "timestamp": 1234 }
 client.on('message', (topic, messageBuffer) => {
   if (topic !== 'tactical/commands') return;
 
@@ -261,25 +279,30 @@ client.on('message', (topic, messageBuffer) => {
     return;
   }
 
-  const { command, target } = cmd;
+  const { command, targetId, patch } = cmd;
 
-  if (!target || !squad[target]) {
-    console.warn(`[CMD] Unknown target: "${target}". Valid: ${Object.keys(squad).join(', ')}`);
+  if (command !== 'patch_soldier') {
+    console.warn(`[CMD] Unknown command: "${command}"`);
     return;
   }
 
-  const soldier = squad[target];
+  const id = String(targetId || '').toLowerCase();
+  const soldier = squad[id];
 
-  switch (command) {
-    case 'casualty':   soldier.cmdCasualty();  break;
-    case 'jam_sensor': soldier.cmdJamSensor(); break;
-    default:
-      console.warn(`[CMD] Unknown command: "${command}"`);
+  if (!soldier) {
+    console.warn(`[CMD] Unknown targetId: "${targetId}". Valid: ${Object.keys(squad).join(', ')}`);
+    return;
   }
+
+  soldier.applyPatch(patch || {});
+
+  // Publish an immediate tick so the dashboard reflects the change right away
+  // without waiting for the next 30s interval
+  simulationTick();
 });
 
 // ─────────────────────────────────────────────────────────────
-//  SECTION 8 — THE SIMULATION TICK (1 Hz GAME LOOP)
+//  SECTION 8 — THE SIMULATION TICK (30s GAME LOOP)
 // ─────────────────────────────────────────────────────────────
 
 function simulationTick() {
@@ -288,14 +311,24 @@ function simulationTick() {
     soldier.tick();
   }
 
-  // 2. Build payload
+  // 2. Build payload — enemy and hostage are static positions, no movement logic
   const payload = {
     timestamp: Date.now(),
     tick:      ++simulationTick._count,
     squad:     Object.values(squad).map(s => s.toJSON()),
+    enemy: {
+      callsign: ENEMY.callsign,
+      lat:      ENEMY.lat,
+      lng:      ENEMY.lng,
+    },
+    hostage: {
+      callsign: HOSTAGE.callsign,
+      lat:      HOSTAGE.lat,
+      lng:      HOSTAGE.lng,
+    },
   };
 
-  // 3. Publish — QoS 0 (fire-and-forget) is correct for high-frequency telemetry
+  // 3. Publish — QoS 0 (fire-and-forget) is correct for telemetry
   if (client.connected) {
     client.publish(
       'tactical/squad/telemetry',
@@ -305,13 +338,13 @@ function simulationTick() {
   }
 
   // 4. Console summary
-  const a = squad.Alpha.toJSON();
-  const c = squad.Charlie.toJSON();
-  process.stdout.write(
-    `\r[TICK ${String(payload.tick).padStart(4, '0')}]` +
-    ` Alpha HR:${a.heartRate} Bat:${a.battery}%` +
-    ` | Charlie HR:${c.heartRate} Status:${c.status}` +
-    ` | Broker:${client.connected ? 'OK' : 'OFFLINE'}   `
+  const a = squad.alpha.toJSON();
+  const c = squad.charlie.toJSON();
+  console.log(
+    `[TICK ${String(payload.tick).padStart(4, '0')}]` +
+    ` ${a.callsign} HR:${a.heartRate} Bat:${a.battery}% Status:${a.status}` +
+    ` | ${c.callsign} HR:${c.heartRate} Status:${c.status}` +
+    ` | Broker:${client.connected ? 'OK' : 'OFFLINE'}`
   );
 }
 

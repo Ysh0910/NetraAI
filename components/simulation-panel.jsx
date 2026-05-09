@@ -3,6 +3,17 @@
 import { useState } from "react";
 import { publishMessage } from "@/hooks/use-mqtt-integration";
 
+// Sends a patch_soldier command to the simulation server via MQTT.
+// The sim applies the patch and immediately publishes a fresh telemetry payload.
+function sendPatch(targetId, patch) {
+  return publishMessage("tactical/commands", {
+    command:   "patch_soldier",
+    targetId,
+    patch,
+    timestamp: Date.now(),
+  });
+}
+
 export function SimulationPanel({ soldiers, onTriggerEvent }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [selectedTarget, setSelectedTarget] = useState("");
@@ -27,16 +38,10 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
       description: "Rapid battery depletion",
     },
     {
-      id: "equipmentFailure",
-      label: "Equip Fail",
-      color: "text-destructive",
-      description: "Equipment malfunction",
-    },
-    {
       id: "connectionLost",
       label: "Conn Lost",
       color: "text-muted-foreground",
-      description: "Lose unit connection",
+      description: "Mark unit offline",
     },
     {
       id: "connectionRestored",
@@ -50,21 +55,44 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
       color: "text-destructive",
       description: "Simulate casualty event",
     },
-    {
-      id: "threatDetected",
-      label: "Threat",
-      color: "text-destructive",
-      description: "Hostile contact detected",
-    },
   ];
 
   const handleTrigger = (eventType) => {
-    if (!selectedTarget && eventType !== "threatDetected") return;
-    onTriggerEvent({
-      type: eventType,
-      targetId: selectedTarget || undefined,
-      timestamp: new Date().toISOString(),
-    });
+    if (!selectedTarget) return;
+
+    const target = soldiers.find((s) => s.id === selectedTarget);
+    if (!target) return;
+
+    let patch = {};
+
+    switch (eventType) {
+      case "heartRateSpike":
+        patch = { heartRate: Math.min(150, (target.heartRate ?? 80) + 40), status: "critical" };
+        break;
+      case "heartRateDrop":
+        patch = { heartRate: Math.max(50, (target.heartRate ?? 80) - 20), status: "warning" };
+        break;
+      case "batteryDrain":
+        patch = { battery: Math.max(5, (target.battery ?? 100) - 30), status: "warning" };
+        break;
+      case "connectionLost":
+        patch = { status: "offline" };
+        break;
+      case "connectionRestored":
+        patch = { status: "nominal", heartRate: 75 + Math.floor(Math.random() * 10), battery: 80 + Math.floor(Math.random() * 15) };
+        break;
+      case "casualty":
+        patch = { heartRate: 42, status: "critical" };
+        break;
+      default:
+        return;
+    }
+
+    const sent = sendPatch(selectedTarget, patch);
+    if (!sent) {
+      // Broker not connected — fall back to local god-mode so the UI still responds
+      onTriggerEvent({ type: eventType, targetId: selectedTarget, timestamp: new Date().toISOString() });
+    }
   };
 
   return (
@@ -135,10 +163,10 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
                 <button
                   key={event.id}
                   onClick={() => handleTrigger(event.id)}
-                  disabled={!selectedTarget && event.id !== "threatDetected"}
+                  disabled={!selectedTarget}
                   title={event.description}
                   className={`px-2 py-1.5 rounded border text-[10px] uppercase tracking-wide transition-all ${
-                    !selectedTarget && event.id !== "threatDetected"
+                    !selectedTarget
                       ? "border-border bg-muted/30 text-muted-foreground cursor-not-allowed"
                       : `border-border hover:border-current ${event.color} bg-background hover:bg-muted/30`
                   }`}
@@ -158,11 +186,14 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
               <button
                 onClick={() => {
                   soldiers.forEach((s) => {
-                    onTriggerEvent({
-                      type: "connectionRestored",
-                      targetId: s.id,
-                      timestamp: new Date().toISOString(),
+                    const sent = sendPatch(s.id, {
+                      status: "nominal",
+                      heartRate: 75 + Math.floor(Math.random() * 10),
+                      battery: 80 + Math.floor(Math.random() * 15),
                     });
+                    if (!sent) {
+                      onTriggerEvent({ type: "connectionRestored", targetId: s.id, timestamp: new Date().toISOString() });
+                    }
                   });
                 }}
                 className="flex-1 px-2 py-1.5 rounded border border-success/50 text-success text-[10px] uppercase tracking-wide hover:bg-success/10 transition-colors"
@@ -171,90 +202,14 @@ export function SimulationPanel({ soldiers, onTriggerEvent }) {
               </button>
               <button
                 onClick={() => {
-                  const randomSoldier =
-                    soldiers[Math.floor(Math.random() * soldiers.length)];
-                  const randomEvents = [
-                    "heartRateSpike",
-                    "batteryDrain",
-                    "equipmentFailure",
-                  ];
-                  const randomEvent =
-                    randomEvents[
-                      Math.floor(Math.random() * randomEvents.length)
-                    ];
-                  onTriggerEvent({
-                    type: randomEvent,
-                    targetId: randomSoldier.id,
-                    timestamp: new Date().toISOString(),
-                  });
+                  const randomSoldier = soldiers[Math.floor(Math.random() * soldiers.length)];
+                  const events = ["heartRateSpike", "batteryDrain", "casualty"];
+                  handleTrigger(events[Math.floor(Math.random() * events.length)]);
+                  if (!selectedTarget) setSelectedTarget(randomSoldier.id);
                 }}
                 className="flex-1 px-2 py-1.5 rounded border border-accent/50 text-accent text-[10px] uppercase tracking-wide hover:bg-accent/10 transition-colors"
               >
                 Random Event
-              </button>
-            </div>
-          </div>
-
-          {/* Pi Test Section */}
-          <div className="pt-2 border-t border-border mt-2">
-            <label className="text-[10px] text-primary uppercase tracking-wider block mb-2">
-              Raspberry Pi Link
-            </label>
-            <div className="flex gap-2">
-              <button
-                onClick={() => {
-                  const sent = publishMessage("battlefield/sensor", {
-                    timestamp: Date.now(),
-                    soldier: { x: 0, y: 0, heart_rate: 0 },
-                    enemy: { x: 0, y: 0, distance: 0 },
-                    hostage: { x: 0, y: 0 },
-                    environment: "ping",
-                    threat_level: "LOW"
-                  });
-                  if (sent) {
-                    onTriggerEvent({
-                      type: "piMessage",
-                      targetId: "system",
-                      timestamp: new Date().toISOString(),
-                    });
-                  }
-                }}
-                className="flex-1 px-2 py-1.5 rounded border border-primary/50 text-primary text-[10px] uppercase tracking-wide hover:bg-primary/10 transition-colors"
-              >
-                Send Test
-              </button>
-              <button
-                onClick={() => {
-                  const sent = publishMessage("battlefield/sensor", {
-                    timestamp: Date.now(),
-                    soldier: {
-                      x: Math.floor(Math.random() * 500),
-                      y: Math.floor(Math.random() * 500),
-                      heart_rate: 75 + Math.floor(Math.random() * 20),
-                    },
-                    enemy: {
-                      x: Math.floor(Math.random() * 500),
-                      y: Math.floor(Math.random() * 500),
-                      distance: 50 + Math.floor(Math.random() * 150),
-                    },
-                    hostage: {
-                      x: Math.floor(Math.random() * 500),
-                      y: Math.floor(Math.random() * 500),
-                    },
-                    environment: "urban",
-                    threat_level: "MEDIUM"
-                  });
-                  if (sent) {
-                    onTriggerEvent({
-                      type: "piTelemetry",
-                      targetId: "system",
-                      timestamp: new Date().toISOString(),
-                    });
-                  }
-                }}
-                className="flex-1 px-2 py-1.5 rounded border border-primary/50 text-primary text-[10px] uppercase tracking-wide hover:bg-primary/10 transition-colors"
-              >
-                Sim Pi Data
               </button>
             </div>
           </div>
