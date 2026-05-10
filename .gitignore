@@ -8,8 +8,84 @@ __v0_jsx-dev-runtime.ts
 
 # Environment variables
 .env*.local
+.env
 
 # Common ignores
 node_modules
 .next/
 .DS_Store
+
+# ─────────────────────────────────────────────────────────────
+#  NETRA-SPECIFIC IGNORES
+# ─────────────────────────────────────────────────────────────
+
+# AI/ML Models (large binary files - download separately)
+netra-comms/models/vosk/
+netra-comms/models/piper/
+netra-raspberry/models/
+*.onnx
+*.bin
+*.mdl
+*.ie
+*.fst
+*.carpa
+*.raw
+final.dubm
+final.mat
+global_cmvn.stats
+splice.conf
+online_cmvn.conf
+
+# Audio files (generated dynamically)
+netra-comms/audio_output/
+netra-comms/temp/
+*.wav
+*.mp3
+*.webm
+*.opus
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Project-specific files (not for repo)
+HACKATHON_PITCH.md
+netra-comms/requirements.txt
+
+# OS files
+Thumbs.db
+desktop.ini

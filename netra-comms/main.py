@@ -24,7 +24,8 @@ from vosk import Model, KaldiRecognizer
 # ─────────────────────────────────────────────────────────────
 
 BASE_DIR = Path(__file__).parent
-VOSK_MODEL_PATH = BASE_DIR / "models" / "vosk"
+# Allow model path override via environment variable for easy A/B testing
+VOSK_MODEL_PATH = Path(os.getenv("VOSK_MODEL_PATH", BASE_DIR / "models" / "vosk"))
 PIPER_MODEL_PATH = BASE_DIR / "models" / "piper"
 TEMP_DIR = BASE_DIR / "temp"
 AUDIO_OUTPUT_DIR = BASE_DIR / "audio_output"
