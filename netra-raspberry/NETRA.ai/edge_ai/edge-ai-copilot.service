@@ -1,0 +1,20 @@
+[Unit]
+Description=Edge AI Copilot - Autonomous Battlefield Edge AI
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/edge_ai
+ExecStart=/usr/bin/python3 /home/pi/edge_ai/main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables (if using virtual environment, update ExecStart instead)
+# ExecStart=/home/pi/edge_ai/venv/bin/python3 /home/pi/edge_ai/main.py
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+# Edge AI Copilot - Core Dependencies
+
+# MQTT Communication
+paho-mqtt>=1.6.1
+
+# LLM Inference
+llama-cpp-python>=0.2.0
