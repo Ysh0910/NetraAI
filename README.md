@@ -17,7 +17,7 @@ N.E.T.R.A. is a distributed telemetry and intelligence hub designed for teams op
 
 Watch N.E.T.R.A. in action — voice commands, real-time telemetry, and AI tactical responses running entirely offline:
 
-https://github.com/Ysh0910/NetraAI/assets/netra_demo_video.mp4
+https://youtu.be/I-IU97HUxvA?si=l55sbKT7L9RQQjEj
 
 ---
 
