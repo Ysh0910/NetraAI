@@ -13,6 +13,14 @@ N.E.T.R.A. is a distributed telemetry and intelligence hub designed for teams op
 
 ---
 
+## 🎬 Demo
+
+Watch N.E.T.R.A. in action — voice commands, real-time telemetry, and AI tactical responses running entirely offline:
+
+<video src="netra_demo_video.mp4" controls width="100%"></video>
+
+---
+
 ## ⚠️ The Problem
 
 Whether in a remote desert, a deep mining operation, or a combat zone experiencing electronic jamming, teams frequently lose access to the internet, cellular networks, and cloud infrastructure.
